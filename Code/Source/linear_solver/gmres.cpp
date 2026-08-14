@@ -151,27 +151,6 @@ void nc_dot2_v(const int dof, const int nNo, const Array<double> &q,
   qb = sum_b;
 }
 
-/// @brief Norm of the newest Krylov vector before it was orthogonalized.
-///
-/// Recovered from column 'i' of the Hessenberg matrix: h(j,i) is the component
-/// of the vector along the j-th orthonormal basis vector, and h(i+1,i) is the
-/// part left orthogonal to all of them. Only squares are summed, so the result
-/// is free of cancellation.
-///
-/// @param[in] h Hessenberg matrix, with column 'i' already filled.
-/// @param[in] i Index of the current Arnoldi step.
-///
-/// @return The norm the vector had before orthogonalization.
-double pre_orth_norm(const Array<double> &h, const int i) {
-  double w_norm = h(i + 1, i) * h(i + 1, i);
-
-  for (int j = 0; j <= i; j++) {
-    w_norm = w_norm + h(j, i) * h(j, i);
-  }
-
-  return sqrt(w_norm);
-}
-
 /// @brief Orthogonalize the newest Krylov vector against the preceding ones,
 /// for one unknown per node.
 ///
@@ -193,12 +172,6 @@ double pre_orth_norm(const Array<double> &h, const int i) {
 /// for those coefficients together with the newest row of L, one for the norm
 /// of the projected vector -- instead of one per basis vector.
 ///
-/// A subdiagonal entry that is negligible against the norm the vector had
-/// before orthogonalization is a lucky breakdown: the Krylov space is invariant
-/// and already contains the solution. In that case h(i+1,i) is set to zero and
-/// the vector is left unnormalized, which drives err(i+1) to zero through the
-/// Givens rotations the caller applies next.
-///
 /// @param[in] lhs FSILS left-hand side structure, used for its communicator.
 /// @param[in] nNo Number of nodes stored on this process, ghost nodes included.
 /// @param[in] mynNo Number of nodes owned by this process.
@@ -208,16 +181,17 @@ double pre_orth_norm(const Array<double> &h, const int i) {
 /// @param[in,out] h Hessenberg matrix. Column 'i' is overwritten.
 /// @param[in,out] gram Strictly lower triangular part of Q^T Q for the basis
 ///   built in this restart cycle. Row 'i' is written, rows above it are read.
+/// @param[out] buffer Scratch space for the reduced inner products, holding at
+///   least 2*i+1 entries. Allocated by the caller and reused at every step.
 void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
                      const int mynNo, const int i, Array<double> &u,
-                     Array<double> &h, Array<double> &gram) {
+                     Array<double> &h, Array<double> &gram,
+                     Vector<double> &buffer) {
   auto w = u.rcol(i + 1);
   auto q_i = u.rcol(i);
 
-  // Q^T w in the leading i+1 entries, the newest row of L in the rest, so that
-  // the two travel in a single reduction.
-  Vector<double> buffer(2 * i + 1);
-
+  // Q^T w goes in the leading i+1 entries of the buffer, the newest row of L in
+  // the rest, so that the two travel in a single reduction.
   for (int j = 0; j < i; j++) {
     nc_dot2_s(mynNo, u.rcol(j), w, q_i, buffer(j), buffer(i + 1 + j));
   }
@@ -244,13 +218,7 @@ void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
   }
 
   h(i + 1, i) = norm::fsi_ls_norms(mynNo, lhs.commu, w);
-
-  if (h(i + 1, i) >
-      std::numeric_limits<double>::epsilon() * pre_orth_norm(h, i)) {
-    omp_la::omp_mul_s(nNo, 1.0 / h(i + 1, i), w);
-  } else {
-    h(i + 1, i) = 0.0;
-  }
+  omp_la::omp_mul_s(nNo, 1.0 / h(i + 1, i), w);
 }
 
 /// @brief Orthogonalize the newest Krylov vector against the preceding ones,
@@ -262,12 +230,6 @@ void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
 /// whole basis, corrected by the measured non-orthogonality of that basis, at
 /// two reductions per step.
 ///
-/// A subdiagonal entry that is negligible against the norm the vector had
-/// before orthogonalization is a lucky breakdown: the Krylov space is invariant
-/// and already contains the solution. In that case h(i+1,i) is set to zero and
-/// the vector is left unnormalized, which drives err(i+1) to zero through the
-/// Givens rotations the caller applies next.
-///
 /// @param[in] lhs FSILS left-hand side structure, used for its communicator.
 /// @param[in] dof Number of unknowns per node.
 /// @param[in] nNo Number of nodes stored on this process, ghost nodes included.
@@ -278,17 +240,17 @@ void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
 /// @param[in,out] h Hessenberg matrix. Column 'i' is overwritten.
 /// @param[in,out] gram Strictly lower triangular part of Q^T Q for the basis
 ///   built in this restart cycle. Row 'i' is written, rows above it are read.
+/// @param[out] buffer Scratch space for the reduced inner products, holding at
+///   least 2*i+1 entries. Allocated by the caller and reused at every step.
 void orthogonalize_v(fsi_linear_solver::FSILS_lhsType &lhs, const int dof,
                      const int nNo, const int mynNo, const int i,
-                     Array3<double> &u, Array<double> &h,
-                     Array<double> &gram) {
+                     Array3<double> &u, Array<double> &h, Array<double> &gram,
+                     Vector<double> &buffer) {
   auto w = u.rslice(i + 1);
   auto q_i = u.rslice(i);
 
-  // Q^T w in the leading i+1 entries, the newest row of L in the rest, so that
-  // the two travel in a single reduction.
-  Vector<double> buffer(2 * i + 1);
-
+  // Q^T w goes in the leading i+1 entries of the buffer, the newest row of L in
+  // the rest, so that the two travel in a single reduction.
   for (int j = 0; j < i; j++) {
     nc_dot2_v(dof, mynNo, u.rslice(j), w, q_i, buffer(j), buffer(i + 1 + j));
   }
@@ -315,13 +277,7 @@ void orthogonalize_v(fsi_linear_solver::FSILS_lhsType &lhs, const int dof,
   }
 
   h(i + 1, i) = norm::fsi_ls_normv(dof, mynNo, lhs.commu, w);
-
-  if (h(i + 1, i) >
-      std::numeric_limits<double>::epsilon() * pre_orth_norm(h, i)) {
-    omp_la::omp_mul_v(dof, nNo, 1.0 / h(i + 1, i), w);
-  } else {
-    h(i + 1, i) = 0.0;
-  }
+  omp_la::omp_mul_v(dof, nNo, 1.0 / h(i + 1, i), w);
 }
 
 } // namespace
@@ -353,10 +309,13 @@ void gmres(fsi_linear_solver::FSILS_lhsType &lhs,
   dmsg << "ls.relTol: " << ls.relTol;
   #endif
 
-  Array<double> h(ls.sD+1,ls.sD), gram(ls.sD,ls.sD); 
-  Array3<double> u(dof,nNo,ls.sD+1); 
+  Array<double> h(ls.sD + 1, ls.sD), gram(ls.sD, ls.sD);
+  Array3<double> u(dof, nNo, ls.sD + 1);
   Array<double> unCondU(dof,nNo);
   Vector<double> y(ls.sD), c(ls.sD), s(ls.sD), err(ls.sD+1);
+
+  // Reduction buffer of the orthogonalization, sized for its last step.
+  Vector<double> buffer(2 * ls.sD - 1);
 
   double time = fsi_linear_solver::fsils_cpu_t();
   ls.success = false;
@@ -436,7 +395,7 @@ void gmres(fsi_linear_solver::FSILS_lhsType &lhs,
         }
       }
 
-      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h, gram);
+      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h, gram, buffer);
 
       for (int j = 0; j <= i-1; j++) {
         double tmp = c(j)*h(j,i) + s(j)*h(j+1,i);
@@ -532,6 +491,9 @@ void gmres_s(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
   Array<double> u(nNo,ls.sD+1);
   Vector<double> X(nNo), y(ls.sD), c(ls.sD), s(ls.sD), err(ls.sD+1);
 
+  // Reduction buffer of the orthogonalization, sized for its last step.
+  Vector<double> buffer(2 * ls.sD - 1);
+
   ls.callD = fsi_linear_solver::fsils_cpu_t();
   ls.success = false;
   double eps = norm::fsi_ls_norms(mynNo, lhs.commu, R);
@@ -587,7 +549,7 @@ void gmres_s(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
       spar_mul::fsils_spar_mul_ss(lhs, lhs.rowPtr, lhs.colPtr, Val, u_col, u_col_1);
       u.set_col(i+1, u_col_1);
 
-      orthogonalize_s(lhs, nNo, mynNo, i, u, h, gram);
+      orthogonalize_s(lhs, nNo, mynNo, i, u, h, gram, buffer);
 
       for (int j = 0; j <= i-1; j++) {
         double tmp = c(j)*h(j,i) + s(j)*h(j+1,i);
@@ -684,6 +646,9 @@ void gmres_v(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
   Array<double> unCondU(dof,nNo);
   Vector<double> y(ls.sD), c(ls.sD), s(ls.sD), err(ls.sD+1);
 
+  // Reduction buffer of the orthogonalization, sized for its last step.
+  Vector<double> buffer(2 * ls.sD - 1);
+
   ls.callD = fsi_linear_solver::fsils_cpu_t();
   ls.success = false;
   double eps = norm::fsi_ls_normv(dof, mynNo, lhs.commu, R);
@@ -759,7 +724,7 @@ void gmres_v(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
         }
       }
 
-      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h, gram);
+      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h, gram, buffer);
 
       for (int j = 0; j <= i-1; j++) {
         double tmp = c(j)*h(j,i) + s(j)*h(j+1,i);

@@ -23,11 +23,10 @@ void fsils_bcast(double& u, FSILS_commuType& commu)
 
 void fsils_bcast_v(const int n, Vector<double>& u, FSILS_commuType& commu)
 {
-  if (commu.nTasks > 1) { 
-    Vector<double> uG(n);
-    MPI_Allreduce(u.data(), uG.data(), n, cm_mod::mpreal, MPI_SUM, commu.comm);
-    u = uG;
-  } 
+  if (commu.nTasks > 1) {
+    MPI_Allreduce(MPI_IN_PLACE, u.data(), n, cm_mod::mpreal, MPI_SUM,
+                  commu.comm);
+  }
 }
 
 };
