@@ -11,6 +11,7 @@
 #include "fsils_api.hpp"
 
 #include "add_bc_mul.h"
+#include "bcast.h"
 #include "dot.h"
 #include "norm.h"
 #include "omp_la.h"
@@ -60,6 +61,96 @@ void bc_pre(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_subL
   }
 }
 
+/// @brief Two local inner products sharing one Krylov basis vector, for one
+/// unknown per node.
+///
+/// Both products stream q once, so the pair costs a single pass over it.
+///
+/// @param[in] nNo Number of nodes to include, i.e. the nodes owned by this
+///   process.
+/// @param[in] q Krylov basis vector, the operand common to both products.
+/// @param[in] a First vector to multiply q with.
+/// @param[in] b Second vector to multiply q with.
+/// @param[out] qa Local part of the inner product of q and a.
+/// @param[out] qb Local part of the inner product of q and b.
+void nc_dot2_s(const int nNo, const Vector<double> &q, const Vector<double> &a,
+               const Vector<double> &b, double &qa, double &qb) {
+  double sum_a = 0.0;
+  double sum_b = 0.0;
+
+  for (int i = 0; i < nNo; i++) {
+    sum_a = sum_a + q(i) * a(i);
+    sum_b = sum_b + q(i) * b(i);
+  }
+
+  qa = sum_a;
+  qb = sum_b;
+}
+
+/// @brief Two local inner products sharing one Krylov basis vector, for 'dof'
+/// unknowns per node.
+///
+/// Both products stream q once, so the pair costs a single pass over it. The
+/// small unknown counts are written out separately, as in dot.cpp, to keep the
+/// node loop free of a nested trip count.
+///
+/// @param[in] dof Number of unknowns per node.
+/// @param[in] nNo Number of nodes to include, i.e. the nodes owned by this
+///   process.
+/// @param[in] q Krylov basis vector, the operand common to both products.
+/// @param[in] a First vector to multiply q with.
+/// @param[in] b Second vector to multiply q with.
+/// @param[out] qa Local part of the inner product of q and a.
+/// @param[out] qb Local part of the inner product of q and b.
+void nc_dot2_v(const int dof, const int nNo, const Array<double> &q,
+               const Array<double> &a, const Array<double> &b, double &qa,
+               double &qb) {
+  double sum_a = 0.0;
+  double sum_b = 0.0;
+
+  switch (dof) {
+    case 1: {
+      for (int i = 0; i < nNo; i++) {
+        sum_a = sum_a + q(0,i)*a(0,i);
+        sum_b = sum_b + q(0,i)*b(0,i);
+      }
+    } break;
+
+    case 2: {
+      for (int i = 0; i < nNo; i++) {
+        sum_a = sum_a + q(0,i)*a(0,i) + q(1,i)*a(1,i);
+        sum_b = sum_b + q(0,i)*b(0,i) + q(1,i)*b(1,i);
+      }
+    } break;
+
+    case 3: {
+      for (int i = 0; i < nNo; i++) {
+        sum_a = sum_a + q(0,i)*a(0,i) + q(1,i)*a(1,i) + q(2,i)*a(2,i);
+        sum_b = sum_b + q(0,i)*b(0,i) + q(1,i)*b(1,i) + q(2,i)*b(2,i);
+      }
+    } break;
+
+    case 4: {
+      for (int i = 0; i < nNo; i++) {
+        sum_a = sum_a + q(0,i)*a(0,i) + q(1,i)*a(1,i) + q(2,i)*a(2,i) + q(3,i)*a(3,i);
+        sum_b = sum_b + q(0,i)*b(0,i) + q(1,i)*b(1,i) + q(2,i)*b(2,i) + q(3,i)*b(3,i);
+      }
+    } break;
+
+    default: {
+      for (int i = 0; i < nNo; i++) {
+        for (int k = 0; k < dof; k++) {
+          sum_a = sum_a + q(k,i)*a(k,i);
+          sum_b = sum_b + q(k,i)*b(k,i);
+        }
+      }
+    } break;
+  }
+
+  qa = sum_a;
+  qb = sum_b;
+}
+
 /// @brief Norm of the newest Krylov vector before it was orthogonalized.
 ///
 /// Recovered from column 'i' of the Hessenberg matrix: h(j,i) is the component
@@ -84,8 +175,23 @@ double pre_orth_norm(const Array<double> &h, const int i) {
 /// @brief Orthogonalize the newest Krylov vector against the preceding ones,
 /// for one unknown per node.
 ///
-/// Applies modified Gram-Schmidt to u(:,i+1), filling column 'i' of the
-/// Hessenberg matrix and normalizing u(:,i+1) in place.
+/// Fills column 'i' of the Hessenberg matrix and normalizes u(:,i+1) in place.
+///
+/// Modified Gram-Schmidt sweeps the basis one vector at a time, each inner
+/// product taken against the partially updated vector, so its inner products
+/// cannot be batched. The same arithmetic is produced here in one shot by
+/// projecting on the whole basis at once and correcting the coefficients with
+/// the measured non-orthogonality of the basis:
+///
+///     w <- w - Q y,   (I + L) y = Q^T w
+///
+/// where L holds the strictly lower triangular part of Q^T Q. A basis that is
+/// orthonormal to working precision leaves L at zero and the coefficients are
+/// those of classical Gram-Schmidt; L carries whatever orthogonality the basis
+/// has actually lost, which is what reproduces the modified sweep. Q^T w is a
+/// batch of independent inner products, so a step costs two reductions -- one
+/// for those coefficients together with the newest row of L, one for the norm
+/// of the projected vector -- instead of one per basis vector.
 ///
 /// A subdiagonal entry that is negligible against the norm the vector had
 /// before orthogonalization is a lucky breakdown: the Krylov space is invariant
@@ -100,13 +206,40 @@ double pre_orth_norm(const Array<double> &h, const int i) {
 /// @param[in,out] u Krylov basis. Column i+1 holds the vector to orthogonalize
 ///   and is overwritten with the new orthonormal basis vector.
 /// @param[in,out] h Hessenberg matrix. Column 'i' is overwritten.
+/// @param[in,out] gram Strictly lower triangular part of Q^T Q for the basis
+///   built in this restart cycle. Row 'i' is written, rows above it are read.
 void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
                      const int mynNo, const int i, Array<double> &u,
-                     Array<double> &h) {
+                     Array<double> &h, Array<double> &gram) {
   auto w = u.rcol(i + 1);
+  auto q_i = u.rcol(i);
+
+  // Q^T w in the leading i+1 entries, the newest row of L in the rest, so that
+  // the two travel in a single reduction.
+  Vector<double> buffer(2 * i + 1);
+
+  for (int j = 0; j < i; j++) {
+    nc_dot2_s(mynNo, u.rcol(j), w, q_i, buffer(j), buffer(i + 1 + j));
+  }
+  buffer(i) = dot::fsils_nc_dot_s(mynNo, q_i, w);
+
+  bcast::fsils_bcast_v(2 * i + 1, buffer, lhs.commu);
+
+  for (int j = 0; j < i; j++) {
+    gram(i, j) = buffer(i + 1 + j);
+  }
+
+  // Forward substitution for (I + L) y = Q^T w. The solution is written
+  // straight into the Hessenberg column, so the entries already solved for act
+  // as the running right-hand side.
+  for (int j = 0; j <= i; j++) {
+    h(j, i) = buffer(j);
+    for (int m = 0; m < j; m++) {
+      h(j, i) = h(j, i) - gram(j, m) * h(m, i);
+    }
+  }
 
   for (int j = 0; j <= i; j++) {
-    h(j, i) = dot::fsils_dot_s(mynNo, lhs.commu, u.rcol(j), w);
     omp_la::omp_sum_s(nNo, -h(j, i), w, u.rcol(j));
   }
 
@@ -123,8 +256,11 @@ void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
 /// @brief Orthogonalize the newest Krylov vector against the preceding ones,
 /// for 'dof' unknowns per node.
 ///
-/// Applies modified Gram-Schmidt to u(:,:,i+1), filling column 'i' of the
-/// Hessenberg matrix and normalizing u(:,:,i+1) in place.
+/// Fills column 'i' of the Hessenberg matrix and normalizes u(:,:,i+1) in
+/// place. The scheme is the one described on orthogonalize_s(): the modified
+/// Gram-Schmidt coefficients are obtained from a batched projection on the
+/// whole basis, corrected by the measured non-orthogonality of that basis, at
+/// two reductions per step.
 ///
 /// A subdiagonal entry that is negligible against the norm the vector had
 /// before orthogonalization is a lucky breakdown: the Krylov space is invariant
@@ -140,13 +276,41 @@ void orthogonalize_s(fsi_linear_solver::FSILS_lhsType &lhs, const int nNo,
 /// @param[in,out] u Krylov basis. Slice i+1 holds the vector to orthogonalize
 ///   and is overwritten with the new orthonormal basis vector.
 /// @param[in,out] h Hessenberg matrix. Column 'i' is overwritten.
+/// @param[in,out] gram Strictly lower triangular part of Q^T Q for the basis
+///   built in this restart cycle. Row 'i' is written, rows above it are read.
 void orthogonalize_v(fsi_linear_solver::FSILS_lhsType &lhs, const int dof,
                      const int nNo, const int mynNo, const int i,
-                     Array3<double> &u, Array<double> &h) {
+                     Array3<double> &u, Array<double> &h,
+                     Array<double> &gram) {
   auto w = u.rslice(i + 1);
+  auto q_i = u.rslice(i);
+
+  // Q^T w in the leading i+1 entries, the newest row of L in the rest, so that
+  // the two travel in a single reduction.
+  Vector<double> buffer(2 * i + 1);
+
+  for (int j = 0; j < i; j++) {
+    nc_dot2_v(dof, mynNo, u.rslice(j), w, q_i, buffer(j), buffer(i + 1 + j));
+  }
+  buffer(i) = dot::fsils_nc_dot_v(dof, mynNo, q_i, w);
+
+  bcast::fsils_bcast_v(2 * i + 1, buffer, lhs.commu);
+
+  for (int j = 0; j < i; j++) {
+    gram(i, j) = buffer(i + 1 + j);
+  }
+
+  // Forward substitution for (I + L) y = Q^T w. The solution is written
+  // straight into the Hessenberg column, so the entries already solved for act
+  // as the running right-hand side.
+  for (int j = 0; j <= i; j++) {
+    h(j, i) = buffer(j);
+    for (int m = 0; m < j; m++) {
+      h(j, i) = h(j, i) - gram(j, m) * h(m, i);
+    }
+  }
 
   for (int j = 0; j <= i; j++) {
-    h(j, i) = dot::fsils_dot_v(dof, mynNo, lhs.commu, u.rslice(j), w);
     omp_la::omp_sum_v(dof, nNo, -h(j, i), w, u.rslice(j));
   }
 
@@ -189,7 +353,7 @@ void gmres(fsi_linear_solver::FSILS_lhsType &lhs,
   dmsg << "ls.relTol: " << ls.relTol;
   #endif
 
-  Array<double> h(ls.sD+1,ls.sD); 
+  Array<double> h(ls.sD+1,ls.sD), gram(ls.sD,ls.sD); 
   Array3<double> u(dof,nNo,ls.sD+1); 
   Array<double> unCondU(dof,nNo);
   Vector<double> y(ls.sD), c(ls.sD), s(ls.sD), err(ls.sD+1);
@@ -272,7 +436,7 @@ void gmres(fsi_linear_solver::FSILS_lhsType &lhs,
         }
       }
 
-      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h);
+      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h, gram);
 
       for (int j = 0; j <= i-1; j++) {
         double tmp = c(j)*h(j,i) + s(j)*h(j+1,i);
@@ -364,7 +528,7 @@ void gmres_s(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
   dmsg << "ls.relTol: " << ls.relTol;
   #endif
 
-  Array<double> h(ls.sD+1,ls.sD);
+  Array<double> h(ls.sD+1,ls.sD), gram(ls.sD,ls.sD);
   Array<double> u(nNo,ls.sD+1);
   Vector<double> X(nNo), y(ls.sD), c(ls.sD), s(ls.sD), err(ls.sD+1);
 
@@ -423,7 +587,7 @@ void gmres_s(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
       spar_mul::fsils_spar_mul_ss(lhs, lhs.rowPtr, lhs.colPtr, Val, u_col, u_col_1);
       u.set_col(i+1, u_col_1);
 
-      orthogonalize_s(lhs, nNo, mynNo, i, u, h);
+      orthogonalize_s(lhs, nNo, mynNo, i, u, h, gram);
 
       for (int j = 0; j <= i-1; j++) {
         double tmp = c(j)*h(j,i) + s(j)*h(j+1,i);
@@ -515,7 +679,7 @@ void gmres_v(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
   dmsg << "ls.relTol: " << ls.relTol;
   #endif
 
-  Array<double> h(ls.sD+1,ls.sD), X(dof,nNo);
+  Array<double> h(ls.sD+1,ls.sD), gram(ls.sD,ls.sD), X(dof,nNo);
   Array3<double> u(dof,nNo,ls.sD+1);
   Array<double> unCondU(dof,nNo);
   Vector<double> y(ls.sD), c(ls.sD), s(ls.sD), err(ls.sD+1);
@@ -595,7 +759,7 @@ void gmres_v(fsi_linear_solver::FSILS_lhsType& lhs, fsi_linear_solver::FSILS_sub
         }
       }
 
-      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h);
+      orthogonalize_v(lhs, dof, nNo, mynNo, i, u, h, gram);
 
       for (int j = 0; j <= i-1; j++) {
         double tmp = c(j)*h(j,i) + s(j)*h(j+1,i);
