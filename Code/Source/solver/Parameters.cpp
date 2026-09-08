@@ -1919,6 +1919,8 @@ ActiveStressParameters::ActiveStressParameters() {
                 relaxation_coefficient);
   set_parameter("Aitken_relaxation", false, !required,
                 aitken_relaxation_enabled);
+  set_parameter("Global_Aitken_relaxation", false, !required,
+                global_aitken_relaxation_enabled);
 
   ActiveStressFactory::visit(
       [this](const std::string &name, const ActiveStress &model) {
@@ -2002,6 +2004,10 @@ double ActiveStressParameters::get_relaxation_coefficient() const {
 
 bool ActiveStressParameters::get_aitken_relaxation_enabled() const {
   return aitken_relaxation_enabled.value();
+}
+
+bool ActiveStressParameters::get_global_aitken_relaxation_enabled() const {
+  return global_aitken_relaxation_enabled.value();
 }
 
 const ActiveStressModelParameters &

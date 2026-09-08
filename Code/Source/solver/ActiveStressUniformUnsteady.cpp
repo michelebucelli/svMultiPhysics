@@ -6,8 +6,9 @@
 #include <fstream>
 #include <vector>
 
-void ActiveStressUniformUnsteady::init(const unsigned int tnNo) {
-  ActiveStress::init(tnNo);
+void ActiveStressUniformUnsteady::init(const unsigned int tnNo,
+                                       const Vector<double> &owned_nodes_) {
+  ActiveStress::init(tnNo, owned_nodes_);
 
   fourier_interpolation = FourierInterpolation::from_time_series_file(
       temporal_values_file_path, /* n_components = */ 1, ramp);

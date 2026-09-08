@@ -712,11 +712,29 @@ void initialize(Simulation* simulation, Vector<double>& timeP)
     cep_mod.cem.Ya_n.resize(tnNo);
   }
 
+  // Mark the nodes this process contributes to sums over the whole mesh. A node
+  // on a partition boundary is held by several processes, and exactly one of
+  // them must contribute it, so we follow the assignment already made by the
+  // linear solver: a node belongs to this process if its position in the linear
+  // solver's node ordering falls in [0, mynNo). In a sequential run every node
+  // is marked.
+  //
+  // @todo[michelebucelli] Deciding which process contributes a node is a
+  // question about the mesh partitioning, but the answer is recorded nowhere
+  // outside the node ordering of the linear solver, so it has to be dug out of
+  // there and carried by hand to whoever needs it. A reduction of a field
+  // defined at the mesh nodes should instead be offered as such, beside
+  // all_fun::commu, and its users should call it without ever seeing a mask.
+  Vector<double> owned_nodes(tnNo);
+  for (int a = 0; a < tnNo; a++) {
+    owned_nodes(a) = (com_mod.lhs.map(a) < com_mod.lhs.mynNo) ? 1.0 : 0.0;
+  }
+
   // Setup the initial conditions for the active stress models.
   for (auto &eq : com_mod.eq) {
     for (auto &dmn : eq.dmn) {
       if (dmn.active_stress != nullptr) {
-        dmn.active_stress->init(tnNo);
+        dmn.active_stress->init(tnNo, owned_nodes);
       }
     }
   }
