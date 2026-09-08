@@ -120,6 +120,12 @@ bool supports_active_stress(const consts::EquationType eq_type);
  * stretch in the tangent matrix. That iteration is generally not contractive on
  * its own, so the active tension is relaxed with the user-specified coefficient
  * @ref relaxation_coefficient.
+ *
+ * A relaxation coefficient that is small enough to converge everywhere is
+ * usually far smaller than needed at most nodes. Enabling @c Aitken_relaxation
+ * re-estimates it at every node and every iteration with Aitken's method, using
+ * @ref relaxation_coefficient only as the value of the first iteration of each
+ * time step. See @ref update for the formula.
  */
 class ActiveStress {
 public:
@@ -195,8 +201,9 @@ public:
   /**
    * @brief Begin a new time step.
    *
-   * Stores the current state as the initial condition of the time step. Must be
-   * called once per time step, before any call to @ref update.
+   * Stores the current state as the initial condition of the time step and
+   * resets the Aitken relaxation coefficients to @ref relaxation_coefficient.
+   * Must be called once per time step, before any call to @ref update.
    */
   virtual void time_advance();
 
@@ -213,14 +220,31 @@ public:
    * this to run a fixed-point iteration, calling this function once per
    * nonlinear iteration of the mechanics problem with an updated fiber stretch.
    *
-   * The active tension is relaxed against the value it had before the call,
+   * The active tension is relaxed against the value it had before the call. In
+   * terms of the fixed-point residual at node @f$i@f$,
    * @f[
-   *   {\Tact}^{k+1} = \omega \, \Tact(\astressstate^{k+1}, \fiberstretch^{k})
-   *     + (1 - \omega) \, {\Tact}^{k}\;,
+   *   r_i^k = \Tact(\astressstate_i^{k+1}, \fiberstretch_i^{k}) - {\Tact}_i^k\;,
    * @f]
-   * with @f$\omega@f$ the relaxation coefficient read from the input file. At
-   * the first call of a time step that value is the converged active tension of
-   * the previous time step.
+   * the update reads
+   * @f[
+   *   {\Tact}_i^{k+1} = {\Tact}_i^k + \omega_i^k \, r_i^k\;.
+   * @f]
+   * At the first call of a time step @f${\Tact}_i^k@f$ is the converged active
+   * tension of the previous time step.
+   *
+   * Without Aitken relaxation @f$\omega_i^k@f$ is the constant
+   * @ref relaxation_coefficient. With Aitken relaxation enabled it is instead
+   * re-estimated at every node from the last two residuals,
+   * @f[
+   *   \omega_i^{k} = -\omega_i^{k-1} \,
+   *     \frac{r_i^{k-1}}{r_i^{k} - r_i^{k-1}}\;,
+   * @f]
+   * which is the node-wise (scalar) form of Aitken's @f$\Delta^2@f$ method: it
+   * is the relaxation that would land exactly on the fixed point if the map
+   * were affine at that node. The estimate is kept unchanged where the residual
+   * difference is too small to be meaningful, and is clamped to a positive
+   * range. @ref relaxation_coefficient provides @f$\omega_i^0@f$, which is reset
+   * at the beginning of every time step by @ref time_advance.
    *
    * @param[in] t Current time (i.e. the time instant being advanced to).
    * @param[in] dt Time step size.
@@ -349,8 +373,42 @@ protected:
   /**
    * @brief Relaxation coefficient @f$\omega \in (0, 1]@f$ applied to the active
    * tension by @ref update.
+   *
+   * With Aitken relaxation enabled this is only the value used at the first
+   * call to @ref update of every time step.
    */
   double relaxation_coefficient;
+
+  /**
+   * @brief Whether @ref update re-estimates the relaxation coefficient at every
+   * node with Aitken's method.
+   */
+  bool aitken_relaxation_enabled_;
+
+  /**
+   * @brief Aitken relaxation coefficient at every node.
+   *
+   * Reset to @ref relaxation_coefficient by @ref time_advance and re-estimated
+   * by every subsequent call to @ref update. Unused when Aitken relaxation is
+   * disabled.
+   */
+  Vector<double> aitken_relaxation;
+
+  /**
+   * @brief Fixed-point residual of the active tension at every node, as
+   * computed by the previous call to @ref update within the current time step.
+   *
+   * Unused when Aitken relaxation is disabled.
+   */
+  Vector<double> previous_residual;
+
+  /**
+   * @brief Whether @ref previous_residual holds a residual from the current
+   * time step, i.e. whether @ref update has already been called since the last
+   * @ref time_advance. Aitken's method needs two residuals, so the first call
+   * of a time step keeps @ref aitken_relaxation at its initial value.
+   */
+  bool previous_residual_available = false;
 
   /// Active tension coefficient along the fiber direction.
   double eta_f;

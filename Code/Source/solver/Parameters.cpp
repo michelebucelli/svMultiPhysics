@@ -1917,6 +1917,8 @@ ActiveStressParameters::ActiveStressParameters() {
                 implicit_coupling);
   set_parameter("Relaxation_coefficient", 1.0, !required,
                 relaxation_coefficient);
+  set_parameter("Aitken_relaxation", false, !required,
+                aitken_relaxation_enabled);
 
   ActiveStressFactory::visit(
       [this](const std::string &name, const ActiveStress &model) {
@@ -1996,6 +1998,10 @@ bool ActiveStressParameters::get_implicit_coupling() const {
 
 double ActiveStressParameters::get_relaxation_coefficient() const {
   return relaxation_coefficient.value();
+}
+
+bool ActiveStressParameters::get_aitken_relaxation_enabled() const {
+  return aitken_relaxation_enabled.value();
 }
 
 const ActiveStressModelParameters &

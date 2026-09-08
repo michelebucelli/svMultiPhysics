@@ -16,6 +16,7 @@ void ActiveStress::read_parameters(const ActiveStressParameters &params) {
 
   implicit_coupling_ = params.get_implicit_coupling();
   relaxation_coefficient = params.get_relaxation_coefficient();
+  aitken_relaxation_enabled_ = params.get_aitken_relaxation_enabled();
 
   svmp::check<svmp::ParseException>(
       relaxation_coefficient > 0.0 && relaxation_coefficient <= 1.0,
@@ -31,6 +32,14 @@ void ActiveStress::read_parameters(const ActiveStressParameters &params) {
       "is disabled, but got " +
           std::to_string(relaxation_coefficient) + ".");
 
+  // Aitken's method estimates the relaxation coefficient from the residuals of
+  // two consecutive fixed-point iterations, which only exist when the coupling
+  // is implicit.
+  svmp::check<svmp::ParseException>(
+      implicit_coupling_ || !aitken_relaxation_enabled_,
+      "Active stress Aitken relaxation requires Implicit_coupling to be "
+      "enabled.");
+
   read_model_specific_parameters(
       params.get_parameters(params.get_model_name()));
 }
@@ -43,6 +52,7 @@ void ActiveStress::distribute_parameters(const CmMod &cm_mod,
 
   cm.bcast(cm_mod, &implicit_coupling_);
   cm.bcast(cm_mod, &relaxation_coefficient);
+  cm.bcast(cm_mod, &aitken_relaxation_enabled_);
 
   distribute_model_specific_parameters(cm_mod, cm);
 }
@@ -63,9 +73,21 @@ void ActiveStress::init(const unsigned int tnNo) {
   states_at_time_step_start = states;
 
   active_tension.resize(tnNo);
+
+  if (aitken_relaxation_enabled_) {
+    aitken_relaxation.resize(tnNo);
+    previous_residual.resize(tnNo);
+  }
 }
 
-void ActiveStress::time_advance() { states_at_time_step_start = states; }
+void ActiveStress::time_advance() {
+  states_at_time_step_start = states;
+
+  if (aitken_relaxation_enabled_)
+    aitken_relaxation = relaxation_coefficient;
+
+  previous_residual_available = false;
+}
 
 void ActiveStress::update(const double t, const double dt,
                           const Vector<double> &calcium,
@@ -73,16 +95,34 @@ void ActiveStress::update(const double t, const double dt,
                           const Vector<double> &fiber_stretch_rate) {
   time = t;
 
-  const double omega = relaxation_coefficient;
-
   for (int i = 0; i < active_tension.size(); ++i) {
     Vector<double> state_loc = states_at_time_step_start.col(i);
     advance_time_step_local(t, dt, calcium[i], fiber_stretch[i],
                             fiber_stretch_rate[i], state_loc);
     states.set_col(i, state_loc);
 
-    const double tension =
-        compute_active_tension_local(state_loc, fiber_stretch[i]);
-    active_tension[i] = omega * tension + (1.0 - omega) * active_tension[i];
+    // Residual of the fixed-point iteration on the active tension.
+    const double residual =
+        compute_active_tension_local(state_loc, fiber_stretch[i]) -
+        active_tension[i];
+
+    double omega = relaxation_coefficient;
+
+    if (aitken_relaxation_enabled_) {
+      // Node-wise Aitken estimate. The formula divides by the difference
+      // between the two residuals, so the coefficient of the previous
+      // iteration is kept where they coincide exactly, which is the case at
+      // every node whose active tension has stopped changing.
+      if (previous_residual_available && residual != previous_residual[i])
+        aitken_relaxation[i] *=
+            -previous_residual[i] / (residual - previous_residual[i]);
+
+      omega = aitken_relaxation[i];
+      previous_residual[i] = residual;
+    }
+
+    active_tension[i] += omega * residual;
   }
+
+  previous_residual_available = true;
 }

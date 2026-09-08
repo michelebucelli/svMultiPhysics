@@ -1542,6 +1542,10 @@ public:
   /// the active stress model is updated.
   double get_relaxation_coefficient() const;
 
+  /// Get whether the relaxation coefficient of the implicit coupling is
+  /// estimated with Aitken's method.
+  bool get_aitken_relaxation_enabled() const;
+
   /// Get the parameters for a given active stress model.
   const ActiveStressModelParameters &
   get_parameters(const std::string &model_name) const;
@@ -1562,6 +1566,12 @@ protected:
   /// every time the active stress model is updated. It relaxes the fixed-point
   /// iteration performed when the coupling is implicit.
   Parameter<double> relaxation_coefficient;
+
+  /// Parameter selecting whether the relaxation coefficient of the implicit
+  /// coupling is re-estimated at every node and every nonlinear iteration with
+  /// Aitken's method, in which case @ref relaxation_coefficient only provides
+  /// the value used at the first iteration of every time step.
+  Parameter<bool> aitken_relaxation_enabled;
 
   /// Parameters for the directional distribution of active tension.
   DirectionalDistributionParameters directional_distribution;
