@@ -96,6 +96,30 @@ bool supports_active_stress(const consts::EquationType eq_type);
  * Notice that if the model is expressed in terms of a system of ODEs, it can
  * be implemented by deriving from @ref ActiveStressODE, which already addresses
  * some of the points above.
+ *
+ * ### Coupling with the mechanics problem
+ *
+ * The active tension depends on the fiber stretch both directly, through the
+ * expression of @f$\Tact@f$, and indirectly, through the state
+ * @f$\astressstate@f$, which is itself driven by the fiber stretch. The
+ * mechanics problem, in turn, depends on the active tension.
+ *
+ * Every time step begins with a call to @ref time_advance, which stores the
+ * state as the initial condition of the step. The state and the active tension
+ * are then computed by @ref update, which can be called any number of times
+ * within the step, always restarting from that stored state.
+ *
+ * By default the two-way coupling is treated explicitly: @ref update is called
+ * once per time step, before the nonlinear iterations of the mechanics problem,
+ * with the fiber stretch of the previous time step. If @c Implicit_coupling is
+ * enabled, @ref update is called again at every nonlinear iteration with the
+ * fiber stretch of the current displacement iterate, so that at convergence the
+ * active tension and the displacement satisfy the coupled problem at the same
+ * time level. The coupling is closed by a fixed-point iteration rather than by
+ * including the derivative of the active tension with respect to the fiber
+ * stretch in the tangent matrix. That iteration is generally not contractive on
+ * its own, so the active tension is relaxed with the user-specified coefficient
+ * @ref relaxation_coefficient.
  */
 class ActiveStress {
 public:
@@ -104,11 +128,11 @@ public:
    *
    * @param n_states_ Number of state variables for this model.
    * @param needs_fiber_stretch Whether this model uses the fiber stretch
-   *   passed to @ref advance_time_step. This flag can be used to determine
-   *   whether fiber stretch computation can be skipped for efficiency.
+   *   passed to @ref update. This flag can be used to determine whether fiber
+   *   stretch computation can be skipped for efficiency.
    * @param needs_fiber_stretch_rate Whether this model uses the fiber stretch
-   *   rate passed to @ref advance_time_step. This flag can be used to determine
-   *   whether fiber stretch rate computation can be skipped for efficiency.
+   *   rate passed to @ref update. This flag can be used to determine whether
+   *   fiber stretch rate computation can be skipped for efficiency.
    */
   ActiveStress(const unsigned int n_states_, const bool needs_fiber_stretch,
                const bool needs_fiber_stretch_rate)
@@ -169,7 +193,34 @@ public:
   virtual void init(const unsigned int tnNo);
 
   /**
-   * @brief Advance in time.
+   * @brief Begin a new time step.
+   *
+   * Stores the current state as the initial condition of the time step. Must be
+   * called once per time step, before any call to @ref update.
+   */
+  virtual void time_advance();
+
+  /**
+   * @brief Update the state and the active tension over the current time step.
+   *
+   * Advances the state stored by @ref time_advance over one time step, using
+   * the given calcium, fiber stretch and fiber stretch rate, and recomputes the
+   * active tension at every node.
+   *
+   * This function may be called more than once per time step: every call
+   * restarts from the state stored by @ref time_advance, so the resulting state
+   * depends only on the arguments of the last call. The implicit coupling uses
+   * this to run a fixed-point iteration, calling this function once per
+   * nonlinear iteration of the mechanics problem with an updated fiber stretch.
+   *
+   * The active tension is relaxed against the value it had before the call,
+   * @f[
+   *   {\Tact}^{k+1} = \omega \, \Tact(\astressstate^{k+1}, \fiberstretch^{k})
+   *     + (1 - \omega) \, {\Tact}^{k}\;,
+   * @f]
+   * with @f$\omega@f$ the relaxation coefficient read from the input file. At
+   * the first call of a time step that value is the converged active tension of
+   * the previous time step.
    *
    * @param[in] t Current time (i.e. the time instant being advanced to).
    * @param[in] dt Time step size.
@@ -179,25 +230,31 @@ public:
    * @param[in] fiber_stretch_rate Fiber stretch rate at every node. This is
    *   usually computed with post::fib_stretch_rate.
    */
-  virtual void advance_time_step(const double t, const double dt,
-                                 const Vector<double> &calcium,
-                                 const Vector<double> &fiber_stretch,
-                                 const Vector<double> &fiber_stretch_rate);
+  virtual void update(const double t, const double dt,
+                      const Vector<double> &calcium,
+                      const Vector<double> &fiber_stretch,
+                      const Vector<double> &fiber_stretch_rate);
+
+  /**
+   * @brief Whether this model is updated within the nonlinear iterations of the
+   * mechanics problem, i.e. whether the coupling is implicit.
+   */
+  bool implicit_coupling() const { return implicit_coupling_; }
 
   /// Number of state variables for this model.
   const unsigned int n_states;
 
   /**
-   * @brief Whether this model uses the fiber stretch passed to
-   * @ref advance_time_step. This flag can be used to determine whether fiber
-   * stretch computation can be skipped for efficiency.
+   * @brief Whether this model uses the fiber stretch passed to @ref update.
+   * This flag can be used to determine whether fiber stretch computation can be
+   * skipped for efficiency.
    */
   bool needs_fiber_stretch() const { return needs_fiber_stretch_; }
 
   /**
    * @brief Whether this model uses the fiber stretch rate passed to
-   * @ref advance_time_step. This flag can be used to determine whether fiber
-   * stretch rate computation can be skipped for efficiency.
+   * @ref update. This flag can be used to determine whether fiber stretch rate
+   * computation can be skipped for efficiency.
    */
   bool needs_fiber_stretch_rate() const { return needs_fiber_stretch_rate_; }
 
@@ -266,14 +323,34 @@ protected:
   compute_active_tension_local(const Vector<double> &state,
                                const double fiber_stretch) const = 0;
 
-  /// Current time. Updated whenever calling @ref advance_time_step.
-  double time;
+  /// Time instant being advanced to. Set by @ref update.
+  double time = 0.0;
 
   /// State variables for the model.
   Array<double> states;
 
+  /**
+   * @brief State variables at the beginning of the current time step.
+   *
+   * Set by @ref time_advance and used by @ref update as the initial condition
+   * of every call within the time step.
+   */
+  Array<double> states_at_time_step_start;
+
   /// Active tension at every node.
   Vector<double> active_tension;
+
+  /**
+   * @brief Whether this model is updated within the nonlinear iterations of the
+   * mechanics problem.
+   */
+  bool implicit_coupling_;
+
+  /**
+   * @brief Relaxation coefficient @f$\omega \in (0, 1]@f$ applied to the active
+   * tension by @ref update.
+   */
+  double relaxation_coefficient;
 
   /// Active tension coefficient along the fiber direction.
   double eta_f;

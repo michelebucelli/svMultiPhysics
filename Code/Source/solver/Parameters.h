@@ -1534,6 +1534,14 @@ public:
   /// Get the active tension coefficient along sheet normals.
   double get_eta_n() const;
 
+  /// Get whether the active stress model is updated within the nonlinear
+  /// iterations of the mechanics problem.
+  bool get_implicit_coupling() const;
+
+  /// Get the relaxation coefficient applied to the active tension every time
+  /// the active stress model is updated.
+  double get_relaxation_coefficient() const;
+
   /// Get the parameters for a given active stress model.
   const ActiveStressModelParameters &
   get_parameters(const std::string &model_name) const;
@@ -1544,6 +1552,16 @@ public:
 protected:
   /// Parameter for the model name.
   Parameter<std::string> model_name;
+
+  /// Parameter selecting whether the active stress model is updated within the
+  /// nonlinear iterations of the mechanics problem, making the coupling between
+  /// active tension and fiber stretch implicit rather than explicit.
+  Parameter<bool> implicit_coupling;
+
+  /// Parameter for the relaxation coefficient applied to the active tension
+  /// every time the active stress model is updated. It relaxes the fixed-point
+  /// iteration performed when the coupling is implicit.
+  Parameter<double> relaxation_coefficient;
 
   /// Parameters for the directional distribution of active tension.
   DirectionalDistributionParameters directional_distribution;
