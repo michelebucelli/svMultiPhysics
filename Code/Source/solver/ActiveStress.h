@@ -21,34 +21,16 @@
 bool supports_active_stress(const consts::EquationType eq_type);
 
 /**
- * @brief Active tension at a point, distributed along the fiber, sheet and
- * sheet-normal directions.
- */
-struct ActiveTension {
-  /// Tension along the fiber direction, @f$\eta_f \Tact@f$.
-  double fibers = 0.0;
-
-  /// Tension along the sheet direction, @f$\eta_s \Tact@f$.
-  double sheets = 0.0;
-
-  /// Tension along the sheet-normal direction, @f$\eta_n \Tact@f$.
-  double sheet_normals = 0.0;
-
-  /// Derivative of @ref fibers with respect to the fiber stretch, at fixed
-  /// state, @f$\eta_f \pdv*{\Tact}{\fiberstretch}@f$.
-  double d_fibers = 0.0;
-
-  /// Derivative of @ref sheets with respect to the fiber stretch, at fixed
-  /// state, @f$\eta_s \pdv*{\Tact}{\fiberstretch}@f$.
-  double d_sheets = 0.0;
-
-  /// Derivative of @ref sheet_normals with respect to the fiber stretch, at
-  /// fixed state, @f$\eta_n \pdv*{\Tact}{\fiberstretch}@f$.
-  double d_sheet_normals = 0.0;
-};
-
-/**
  * @brief Abstract active stress class.
+ *
+ * ## Table of contents
+ *
+ * - @ref activestress-overview
+ * - @ref activestress-directions
+ * - @ref activestress-implementing
+ * - @ref activestress-coupling
+ *
+ * ## Overview {#activestress-overview}
  *
  * This class provides an interface for defining active stress models, i.e.
  * models that, in the context of structural mechanics of muscular tissue,
@@ -72,7 +54,7 @@ struct ActiveTension {
  * every mesh node and storing it in a vector, whose values can be accessed
  * through @ref ActiveStress::get_tension_fibers.
  *
- * ### Directional distribution of active stress
+ * ## Directional distribution of active stress {#activestress-directions}
  *
  * In muscular mechanics models, active stress normally acts only along the
  * direction of fibers @f$\fiberdirection@f$, reflecting the fact that
@@ -101,7 +83,7 @@ struct ActiveTension {
  * ActiveStress::get_tension_sheet_normals to access @f$\eta_f \Tact@f$,
  * @f$\eta_s \Tact@f$ and @f$\eta_n \Tact@f$, respectively.
  *
- * ### Implementing concrete active stress models
+ * ## Implementing concrete active stress models {#activestress-implementing}
  *
  * To implement a new active stress model, the following steps need to be taken:
  *
@@ -124,38 +106,144 @@ struct ActiveTension {
  * be implemented by deriving from @ref ActiveStressODE, which already addresses
  * some of the points above.
  *
- * ### Coupling with the mechanics problem
+ * ## Coupling with the structural mechanics problem {#activestress-coupling}
  *
- * The active tension depends on the fiber stretch both directly, through the
- * expression of @f$\Tact@f$, and indirectly, through the state
- * @f$\astressstate@f$, which is itself driven by the fiber stretch. The
- * mechanics problem, in turn, depends on the active tension.
+ * The active tension depends on the fiber stretch @f$\fiberstretch@f$ both
+ * directly, through the expression of @f$\Tact@f$, and indirectly, through the
+ * state @f$\astressstate@f$, which is itself driven by the fiber stretch. The
+ * mechanics problem, in turn, depends on @f$\Tact@f$.
  *
- * Every time step begins with a call to @ref time_advance, which stores the
- * state as the initial condition of the step. The state and the active tension
- * are then computed by @ref update, which can be called any number of times
- * within the step, always restarting from that stored state.
+ * Explicit time discretization for the direct dependence was observed to lead
+ * to instabilities. Accordingly, the direct dependence is discretized
+ * implicitly, that is the active tension is recomputed within the nonlinear
+ * iterations for the structure problem that uses ActiveStress. To facilitate
+ * the convergence of nonlinear iterations, this class also allows to compute
+ * the derivative @f$\frac{\partial\Tact}{\partial\fiberstretch}@f$, which is
+ * used to assemble tangent terms associated to this in the structural system.
  *
- * The two dependences are resolved differently. The direct one is always
- * implicit: the mechanics problem evaluates the active tension at its own
- * quadrature points, against the fiber stretch of the deformation gradient it
- * is assembling (see @ref ActiveStressElement), and it builds the tangent of
- * the resulting active stress from
- * @ref compute_active_tension_derivative_local, so its own nonlinear
- * iterations resolve it.
- *
- * The indirect one is explicit by default: @ref update is called once per time
- * step, before the nonlinear iterations of the mechanics problem, with the
- * fiber stretch of the previous time step, and the state is then held fixed for
- * the whole step. If @c Implicit_state_coupling is enabled, @ref update is
- * called again at every nonlinear iteration with the fiber stretch of the
- * current displacement iterate, turning the indirect dependence into a
- * fixed-point iteration nested in the nonlinear ones. Its tangent is not
- * assembled, since that would mean differentiating through the ODE solver of
- * the model.
+ * Indirect dependence was not observed to give rise to instabilities.
+ * Accordingly, it is discretized explicitly by default, meaning that the state
+ * is updated once per time step evaluating the fiber stretch
+ * @f$\fiberstretch@f$ using the displacement from the previous time step. The
+ * user can change this behavior by setting the parameter @c
+ * Implicit_state_coupling to @c true in the XML file. This will make the state
+ * update every nonlinear iteration. No tangent terms are computed for this
+ * contribution, so nonlinear iterations can be expected to converge more slowly
+ * when this is enabled.
  */
 class ActiveStress {
 public:
+  /**
+   * @brief Active tension information at a point.
+   *
+   * This struct bundles the active tension along the three principal
+   * directions (fibers @f$\fiberdirection@f$, sheets @f$\sheetdirection@f$ and
+   * sheet normals @f$\sheetnormaldirection@f$) and their partial derivatives
+   * with respect to the fiber stretch.
+   *
+   * It is a convenience data structure used to pass this information to
+   * functions that consume active tension information (e.g. the structural
+   * mechanics assembly functions).
+   */
+  struct ActiveTension {
+    /// Tension along the fiber direction, @f$\eta_f \Tact@f$.
+    double fibers = 0.0;
+
+    /// Tension along the sheet direction, @f$\eta_s \Tact@f$.
+    double sheets = 0.0;
+
+    /// Tension along the sheet-normal direction, @f$\eta_n \Tact@f$.
+    double sheet_normals = 0.0;
+
+    /// Derivative of @ref fibers with respect to the fiber stretch, at fixed
+    /// state, @f$\eta_f \pdv*{\Tact}{\fiberstretch}@f$.
+    double d_fibers = 0.0;
+
+    /// Derivative of @ref sheets with respect to the fiber stretch, at fixed
+    /// state, @f$\eta_s \pdv*{\Tact}{\fiberstretch}@f$.
+    double d_sheets = 0.0;
+
+    /// Derivative of @ref sheet_normals with respect to the fiber stretch, at
+    /// fixed state, @f$\eta_n \pdv*{\Tact}{\fiberstretch}@f$.
+    double d_sheet_normals = 0.0;
+  };
+
+  /**
+   * @brief Evaluates the active tension of an element at its quadrature
+   * points.
+   *
+   * An active stress model holds its state at the mesh nodes, because that is
+   * where the fiber stretch driving its ODE is available. The mechanics
+   * problem, however, needs the active tension at the quadrature points of an
+   * element.
+   *
+   * This class bridges the two. @ref update copies the nodal state of an
+   * element once, and @ref evaluate interpolates it to a quadrature point and
+   * evaluates the active tension there, against the fiber stretch of the
+   * deformation gradient being assembled.
+   *
+   * Evaluating the tension at the quadrature point, rather than at the nodes,
+   * makes its dependence on the fiber stretch local to the element: the
+   * stretch comes from the deformation gradient of that quadrature point
+   * alone, and not from the L2 projection of the stretch onto the mesh nodes,
+   * which averages over a patch of elements.
+   *
+   * The state is the one the active stress model was last advanced to, and it
+   * is held fixed by this class: only the direct dependence of the active
+   * tension on the fiber stretch is resolved here, while its indirect
+   * dependence, through the state, is resolved by the nonlinear iterations of
+   * the mechanics problem.
+   *
+   * This class is a friend of @ref ActiveStress, so that @ref update can copy
+   * the state directly out of @ref ActiveStress::states rather than through an
+   * accessor.
+   */
+  class Evaluator {
+  public:
+    /**
+     * @brief Update the state held by this evaluator from an active stress
+     * model, at the nodes of one element.
+     *
+     * @param[in] active_stress Active stress model of the domain the element
+     *   belongs to.
+     * @param[in] nodes Indices of the mesh nodes of the element.
+     */
+    void update(const ActiveStress &active_stress, const Vector<int> &nodes);
+
+    /**
+     * @brief Reset this evaluator so that @ref evaluate returns zero tension,
+     * until the next call to @ref update.
+     *
+     * Used for elements whose domain has no active stress model.
+     */
+    void clear() { active_stress_ = nullptr; }
+
+    /**
+     * @brief Compute the active tension at a quadrature point.
+     *
+     * @param[in] N Shape functions at the quadrature point, of the same nodes
+     *   the state was gathered at by @ref update.
+     * @param[in] F Deformation gradient at the quadrature point.
+     * @param[in] fN Fiber directions of the element, the first column being
+     *   the fiber direction itself. Only read by the models that use the
+     *   fiber stretch.
+     */
+    ActiveTension evaluate(const Vector<double> &N, const Array<double> &F,
+                           const Array<double> &fN) const;
+
+  private:
+    /// Active stress model of the domain the element belongs to, or null if
+    /// @ref clear was called last, or if this evaluator was never updated.
+    const ActiveStress *active_stress_ = nullptr;
+
+    /// State variables at the element nodes, of size (n_states, element
+    /// nodes).
+    Array<double> state_;
+  };
+
+  /// Grants @ref Evaluator direct access to @ref states.
+  friend class Evaluator;
+
   /**
    * @brief Constructor.
    *
@@ -216,15 +304,14 @@ public:
   }
 
   /**
-   * @brief Compute the active tension at a point, from a state vector and a
-   * fiber stretch that need not be those of a mesh node.
-   *
-   * This is what the mechanics problem calls at its quadrature points, where
-   * the state comes from interpolating the nodal one and the fiber stretch is
-   * that of the deformation gradient being assembled.
+   * @brief Compute the active tension given the state vector and fiber stretch.
    *
    * @param[in] state State vector at the point.
    * @param[in] fiber_stretch Fiber stretch at the point.
+   *
+   * @return Active tension along fibers, sheets and sheet normals, and their
+   *   derivatives with respect to the fiber stretch, bundled in an object of
+   *   type @ref ActiveTension.
    */
   ActiveTension compute_tension(const Vector<double> &state,
                                 const double fiber_stretch) const {
@@ -235,15 +322,6 @@ public:
     return {eta_f * tension,    eta_s * tension,    eta_n * tension,
             eta_f * derivative, eta_s * derivative, eta_n * derivative};
   }
-
-  /**
-   * @brief Copy the state variables at the given nodes into a matrix holding
-   * one column per node.
-   *
-   * @param[in] nodes Indices of the nodes to gather the state of.
-   * @param[out] state Matrix of size (@ref n_states, nodes.size()).
-   */
-  void gather_states(const Vector<int> &nodes, Array<double> &state) const;
 
   /**
    * @brief Initialize the model.

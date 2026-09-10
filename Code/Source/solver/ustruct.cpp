@@ -253,7 +253,7 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
   Array<double> xl(nsd,eNoN), al(tDof,eNoN), yl(tDof,eNoN), dl(tDof,eNoN),
                 bfl(nsd,eNoN), fN(nsd,nFn), pS0l(nsymd,eNoN), Nx(nsd,eNoN), lR(dof,eNoN);
   Array3<double> lK(dof*dof,eNoN,eNoN), lKd(dof*nsd,eNoN,eNoN);
-  ActiveStressElement active_stress_element;
+  ActiveStress::Evaluator active_stress_evaluator;
 
   for (int e = 0; e < lM.nEl; e++) {
     // Change the current domain which will be used in later function calls.
@@ -291,7 +291,11 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
 
     }
 
-    active_stress_element.gather(eq.dmn[cDmn].active_stress.get(), ptr);
+    if (eq.dmn[cDmn].active_stress != nullptr) {
+      active_stress_evaluator.update(*eq.dmn[cDmn].active_stress, ptr);
+    } else {
+      active_stress_evaluator.clear();
+    }
 
     // Initialize residual and tangents
     lR = 0.0;
@@ -337,14 +341,14 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
         auto N1 = fs[1].N.col(g);
         ustruct_3d_m(com_mod, cep_mod, vmsStab, fs[0].eNoN, fs[1].eNoN, nFn, w,
                      Jac, N0, N1, Nwx, al, yl, dl, bfl, fN,
-                     active_stress_element, lR, lK, lKd);
+                     active_stress_evaluator, lR, lK, lKd);
 
       } else if (nsd == 2) {
         auto N0 = fs[0].N.col(g);
         auto N1 = fs[1].N.col(g);
         ustruct_2d_m(com_mod, cep_mod, vmsStab, fs[0].eNoN, fs[1].eNoN, nFn, w,
                      Jac, N0, N1, Nwx, al, yl, dl, bfl, fN,
-                     active_stress_element, lR, lK, lKd);
+                     active_stress_evaluator, lR, lK, lKd);
       }
 
     } // for g = 0 to fs[0].nG
@@ -874,7 +878,7 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
                   const Array<double> &al, const Array<double> &yl,
                   const Array<double> &dl, const Array<double> &bfl,
                   const Array<double> &fN,
-                  const ActiveStressElement &active_stress_element,
+                  const ActiveStress::Evaluator &active_stress_evaluator,
                   Array<double> &lR, Array3<double> &lK, Array3<double> &lKd) {
   using namespace consts;
   using namespace mat_fun;
@@ -949,7 +953,7 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
   auto Fi = mat_fun::mat_inv(F, 2);
 
   // Active tension, evaluated here from the fiber stretch of F.
-  const auto Ta = active_stress_element.evaluate(Nw, F, fN);
+  const auto Ta = active_stress_evaluator.evaluate(Nw, F, fN);
 
   // Pressure and its time derivative
   //
@@ -1160,7 +1164,7 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
                   const Array<double> &al, const Array<double> &yl,
                   const Array<double> &dl, const Array<double> &bfl,
                   const Array<double> &fN,
-                  const ActiveStressElement &active_stress_element,
+                  const ActiveStress::Evaluator &active_stress_evaluator,
                   Array<double> &lR, Array3<double> &lK, Array3<double> &lKd) {
   using namespace consts;
   using namespace mat_fun;
@@ -1255,7 +1259,7 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
   auto Fi = mat_fun::mat_inv(F, 3);
 
   // Active tension, evaluated here from the fiber stretch of F.
-  const auto Ta = active_stress_element.evaluate(Nw, F, fN);
+  const auto Ta = active_stress_evaluator.evaluate(Nw, F, fN);
 
   // Pressure and its time derivative
   //

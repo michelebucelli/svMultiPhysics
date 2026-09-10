@@ -264,7 +264,6 @@ set(CSRCS
   IonicModelTTP.cpp
 
   ActiveStress.cpp
-  ActiveStressElement.cpp
   ActiveStressUniformSteady.cpp
   ActiveStressUniformUnsteady.cpp
   ActiveStressODE.cpp

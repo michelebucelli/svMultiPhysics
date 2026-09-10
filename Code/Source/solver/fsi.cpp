@@ -70,7 +70,7 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const So
   Array<double> xl(nsd,eNoN), al(tDof,eNoN), yl(tDof,eNoN), dl(tDof,eNoN), bfl(nsd,eNoN), 
       fN(nsd,nFn), pS0l(nsymd,eNoN), lR(dof,eNoN);
   Vector<double> pSl(nsymd);
-  ActiveStressElement active_stress_element;
+  ActiveStress::Evaluator active_stress_evaluator;
 
   std::array<fsType,2> fs_1;
   fs::get_thood_fs(com_mod, fs_1, lM, vmsStab, 1);
@@ -128,7 +128,11 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const So
 
     }
 
-    active_stress_element.gather(eq.dmn[cDmn].active_stress.get(), ptr);
+    if (eq.dmn[cDmn].active_stress != nullptr) {
+      active_stress_evaluator.update(*eq.dmn[cDmn].active_stress, ptr);
+    } else {
+      active_stress_evaluator.clear();
+    }
 
     // For FSI, fluid domain should be in the current configuration
     //
@@ -215,7 +219,7 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const So
             auto N0 = fs_1[0].N.col(g);
             struct_ns::struct_3d(com_mod, cep_mod, fs_1[0].eNoN, nFn, w, N0,
                                  Nwx, al, yl, dl, bfl, fN, pS0l, pSl,
-                                 active_stress_element, lR, lK);
+                                 active_stress_evaluator, lR, lK);
           } break;
           case Equation_lElas:
             throw std::runtime_error("[construct_fsi] LELAS3D not implemented");
@@ -227,7 +231,7 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const So
             auto N1 = fs_1[1].N.col(g);
             ustruct::ustruct_3d_m(com_mod, cep_mod, vmsStab, fs_1[0].eNoN,
                                   fs_1[1].eNoN, nFn, w, Jac, N0, N1, Nwx, al,
-                                  yl, dl, bfl, fN, active_stress_element, lR,
+                                  yl, dl, bfl, fN, active_stress_evaluator, lR,
                                   lK, lKd);
             break;
           }
@@ -251,7 +255,7 @@ void construct_fsi(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const So
             auto N0 = fs_1[0].N.col(g);
             struct_ns::struct_2d(com_mod, cep_mod, fs_1[0].eNoN, nFn, w, N0,
                                  Nwx, al, yl, dl, bfl, fN, pS0l, pSl,
-                                 active_stress_element, lR, lK);
+                                 active_stress_evaluator, lR, lK);
           } break;
 
           case Equation_ustruct:

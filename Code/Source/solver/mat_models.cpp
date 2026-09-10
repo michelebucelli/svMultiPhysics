@@ -270,8 +270,8 @@ template <size_t nsd>
 void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
                    const dmnType &lDmn, const Matrix<nsd> &F, const int nfd,
                    const Eigen::Matrix<double, nsd, Eigen::Dynamic> fl,
-                   const ActiveTension &active_tension, Matrix<nsd> &S,
-                   Matrix<3 * (nsd - 1)> &Dm, double &Ja) {
+                   const ActiveStress::ActiveTension &active_tension,
+                   Matrix<nsd> &S, Matrix<3 * (nsd - 1)> &Dm, double &Ja) {
   using namespace consts;
   using namespace mat_fun;
   using namespace utils;
@@ -815,7 +815,7 @@ void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
  * 
  */
 void compute_pk2cc(const ComMod& com_mod, const CepMod& cep_mod, const dmnType& lDmn, const Array<double>& F, const int nfd,
-    const Array<double>& fl, const ActiveTension& active_tension, Array<double>& S, Array<double>& Dm, double& Ja)
+    const Array<double>& fl, const ActiveStress::ActiveTension& active_tension, Array<double>& S, Array<double>& Dm, double& Ja)
 {
     // Number of spatial dimensions
     int nsd = com_mod.nsd;

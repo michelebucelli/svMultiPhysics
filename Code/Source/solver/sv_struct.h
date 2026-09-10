@@ -4,7 +4,7 @@
 #ifndef STRUCT_H 
 #define STRUCT_H 
 
-#include "ActiveStressElement.h"
+#include "ActiveStress.h"
 #include "ComMod.h"
 #include "SolutionStates.h"
 
@@ -26,7 +26,7 @@ void struct_2d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
                const Array<double> &dl, const Array<double> &bfl,
                const Array<double> &fN, const Array<double> &pS0l,
                Vector<double> &pSl,
-               const ActiveStressElement &active_stress_element,
+               const ActiveStress::Evaluator &active_stress_evaluator,
                Array<double> &lR, Array3<double> &lK);
 
 void struct_3d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
@@ -35,7 +35,7 @@ void struct_3d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
                const Array<double> &dl, const Array<double> &bfl,
                const Array<double> &fN, const Array<double> &pS0l,
                Vector<double> &pSl,
-               const ActiveStressElement &active_stress_element,
+               const ActiveStress::Evaluator &active_stress_evaluator,
                Array<double> &lR, Array3<double> &lK);
 };
 

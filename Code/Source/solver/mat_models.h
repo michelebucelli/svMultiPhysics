@@ -52,8 +52,8 @@ void voigt_to_cc(const int nsd, const Array<double>& Dm, Tensor4<double>& CC);
 void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
                    const dmnType &lDmn, const Array<double> &F, const int nfd,
                    const Array<double> &fl,
-                   const ActiveTension &active_tension, Array<double> &S,
-                   Array<double> &Dm, double &Ja);
+                   const ActiveStress::ActiveTension &active_tension,
+                   Array<double> &S, Array<double> &Dm, double &Ja);
 
 void compute_pk2cc_shlc(const ComMod& com_mod, const dmnType& lDmn, const int nfd, const Array<double>& fNa0,
     const Array<double>& gg_0, const Array<double>& gg_x, double& g33, Vector<double>& Sml, Array<double>& Dml);

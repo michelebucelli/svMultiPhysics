@@ -3,7 +3,7 @@
 
 #include "post.h"
 
-#include "ActiveStressElement.h"
+#include "ActiveStress.h"
 #include "FE/Common/FEException.h"
 #include "all_fun.h"
 #include "fluid.h"
@@ -1713,7 +1713,7 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
   Array<double> Nx(nsd,fs.eNoN); 
   Vector<double> N(fs.eNoN);
   Vector<int> element_nodes(fs.eNoN);
-  ActiveStressElement active_stress_element;
+  ActiveStress::Evaluator active_stress_evaluator;
 
   int insd = nsd;
   if (lM.lFib) {
@@ -1772,8 +1772,11 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
       }
     }
 
-    active_stress_element.gather(eq.dmn[cDmn].active_stress.get(),
-                                 element_nodes);
+    if (eq.dmn[cDmn].active_stress != nullptr) {
+      active_stress_evaluator.update(*eq.dmn[cDmn].active_stress, element_nodes);
+    } else {
+      active_stress_evaluator.clear();
+    }
 
     Je = 0.0;
     double Jac = 0.0;
@@ -1873,7 +1876,7 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
           // Evaluate the active stress at the current Gauss point, the same
           // way the residual assembly does, so that the active contribution to
           // the reported stress matches the one the solver used.
-          const auto Ta = active_stress_element.evaluate(N, F, fN);
+          const auto Ta = active_stress_evaluator.evaluate(N, F, fN);
 
           if (cPhys == EquationType::phys_lElas) {
             if (nsd == 3) {

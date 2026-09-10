@@ -225,7 +225,7 @@ void construct_dsolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
 
   Vector<int> ptr(eNoN);
   Vector<double> pSl(nsymd), N(eNoN);
-  ActiveStressElement active_stress_element;
+  ActiveStress::Evaluator active_stress_evaluator;
   Array<double> xl(nsd,eNoN), al(tDof,eNoN), yl(tDof,eNoN), dl(tDof,eNoN), 
                 bfl(nsd,eNoN), fN(nsd,nFn), pS0l(nsymd,eNoN), Nx(nsd,eNoN), lR(dof,eNoN);
   Array3<double> lK(dof*dof,eNoN,eNoN);
@@ -277,7 +277,11 @@ void construct_dsolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
       }
     }
 
-    active_stress_element.gather(eq.dmn[cDmn].active_stress.get(), ptr);
+    if (eq.dmn[cDmn].active_stress != nullptr) {
+      active_stress_evaluator.update(*eq.dmn[cDmn].active_stress, ptr);
+    } else {
+      active_stress_evaluator.clear();
+    }
 
     // Gauss integration
     //
@@ -301,7 +305,7 @@ void construct_dsolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
 
       if (nsd == 3) {
         struct_3d(com_mod, cep_mod, eNoN, nFn, w, N, Nx, al, yl, dl, bfl, fN,
-                  pS0l, pSl, active_stress_element, lR, lK);
+                  pS0l, pSl, active_stress_evaluator, lR, lK);
 
 #if 0
         if (e == 0 && g == 0) {
@@ -315,7 +319,7 @@ void construct_dsolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
 
       } else if (nsd == 2) {
         struct_2d(com_mod, cep_mod, eNoN, nFn, w, N, Nx, al, yl, dl, bfl, fN,
-                  pS0l, pSl, active_stress_element, lR, lK);
+                  pS0l, pSl, active_stress_evaluator, lR, lK);
       }
 
       // Prestress
@@ -342,7 +346,7 @@ void struct_2d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
                const Array<double> &dl, const Array<double> &bfl,
                const Array<double> &fN, const Array<double> &pS0l,
                Vector<double> &pSl,
-               const ActiveStressElement &active_stress_element,
+               const ActiveStress::Evaluator &active_stress_evaluator,
                Array<double> &lR, Array3<double> &lK) {
   using namespace consts;
   using namespace mat_fun;
@@ -411,7 +415,7 @@ void struct_2d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
   }
 
   // Active tension, evaluated here from the fiber stretch of F.
-  const auto Ta = active_stress_element.evaluate(N, F, fN);
+  const auto Ta = active_stress_evaluator.evaluate(N, F, fN);
 
   #ifdef debug_struct_2d
   dmsg << "ud: " << ud(0) << " " << ud(1);
@@ -533,7 +537,7 @@ void struct_3d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
                const Array<double> &dl, const Array<double> &bfl,
                const Array<double> &fN, const Array<double> &pS0l,
                Vector<double> &pSl,
-               const ActiveStressElement &active_stress_element,
+               const ActiveStress::Evaluator &active_stress_evaluator,
                Array<double> &lR, Array3<double> &lK) {
   using namespace consts;
   using namespace mat_fun;
@@ -628,7 +632,7 @@ void struct_3d(ComMod &com_mod, CepMod &cep_mod, const int eNoN, const int nFn,
   }
 
   // Active tension, evaluated here from the fiber stretch of F.
-  const auto Ta = active_stress_element.evaluate(N, F, fN);
+  const auto Ta = active_stress_evaluator.evaluate(N, F, fN);
 
   S0(1,0) = S0(0,1);
   S0(2,1) = S0(1,2);

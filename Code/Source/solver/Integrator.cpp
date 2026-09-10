@@ -518,7 +518,7 @@ void Integrator::update_active_stress(eqType& eq, const Vector<double>& fiber_st
   // Fill in the nodal active tension vector. This is what gets written to the
   // output and restart files; the mechanics problem does not read it, because
   // it evaluates the active tension at its quadrature points instead (see
-  // ActiveStressElement).
+  // ActiveStress::Evaluator).
   //
   // We go through all mesh nodes, find the domain they are associated with,
   // and get the active stress from that domain. If a point is associated to
