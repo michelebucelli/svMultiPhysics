@@ -21,6 +21,33 @@
 bool supports_active_stress(const consts::EquationType eq_type);
 
 /**
+ * @brief Active tension at a point, distributed along the fiber, sheet and
+ * sheet-normal directions.
+ */
+struct ActiveTension {
+  /// Tension along the fiber direction, @f$\eta_f \Tact@f$.
+  double fibers = 0.0;
+
+  /// Tension along the sheet direction, @f$\eta_s \Tact@f$.
+  double sheets = 0.0;
+
+  /// Tension along the sheet-normal direction, @f$\eta_n \Tact@f$.
+  double sheet_normals = 0.0;
+
+  /// Derivative of @ref fibers with respect to the fiber stretch, at fixed
+  /// state, @f$\eta_f \pdv*{\Tact}{\fiberstretch}@f$.
+  double d_fibers = 0.0;
+
+  /// Derivative of @ref sheets with respect to the fiber stretch, at fixed
+  /// state, @f$\eta_s \pdv*{\Tact}{\fiberstretch}@f$.
+  double d_sheets = 0.0;
+
+  /// Derivative of @ref sheet_normals with respect to the fiber stretch, at
+  /// fixed state, @f$\eta_n \pdv*{\Tact}{\fiberstretch}@f$.
+  double d_sheet_normals = 0.0;
+};
+
+/**
  * @brief Abstract active stress class.
  *
  * This class provides an interface for defining active stress models, i.e.
@@ -115,19 +142,9 @@ bool supports_active_stress(const consts::EquationType eq_type);
  * enabled, @ref update is called again at every nonlinear iteration with the
  * fiber stretch of the current displacement iterate, so that at convergence the
  * active tension and the displacement satisfy the coupled problem at the same
- * time level. The coupling is closed by a fixed-point iteration rather than by
+ * time level. The coupling is closed by a fixed-point iteration, without
  * including the derivative of the active tension with respect to the fiber
- * stretch in the tangent matrix. That iteration is generally not contractive on
- * its own, so the active tension is relaxed with the user-specified coefficient
- * @ref relaxation_coefficient.
- *
- * A fixed relaxation coefficient has to be chosen small enough for the slowest
- * node, which over-damps all the others. Enabling @c Aitken_relaxation
- * re-estimates it at every iteration with Aitken's method, using
- * @ref relaxation_coefficient only as the value of the first iteration of each
- * time step. By default every node gets its own coefficient; enabling
- * @c Global_Aitken_relaxation estimates a single coefficient for the whole mesh
- * instead. See @ref update for the two formulas.
+ * stretch in the tangent matrix.
  */
 class ActiveStress {
 public:
@@ -191,23 +208,50 @@ public:
   }
 
   /**
+   * @brief Compute the active tension at a point, from a state vector and a
+   * fiber stretch that need not be those of a mesh node.
+   *
+   * This is what the mechanics problem calls at its quadrature points, where
+   * the state comes from interpolating the nodal one and the fiber stretch is
+   * that of the deformation gradient being assembled.
+   *
+   * @param[in] state State vector at the point.
+   * @param[in] fiber_stretch Fiber stretch at the point.
+   */
+  ActiveTension compute_tension(const Vector<double> &state,
+                                const double fiber_stretch) const {
+    const double tension = compute_active_tension_local(state, fiber_stretch);
+    const double derivative =
+        compute_active_tension_derivative_local(state, fiber_stretch);
+
+    return {eta_f * tension,    eta_s * tension,    eta_n * tension,
+            eta_f * derivative, eta_s * derivative, eta_n * derivative};
+  }
+
+  /**
+   * @brief Copy the state variables at the given nodes into a matrix holding
+   * one column per node.
+   *
+   * @param[in] nodes Indices of the nodes to gather the state of.
+   * @param[out] state Matrix of size (@ref n_states, nodes.size()).
+   */
+  void gather_states(const Vector<int> &nodes, Array<double> &state) const;
+
+  /**
    * @brief Initialize the model.
    *
    * Allocates the internal state vector and initializes it with the model's
    * initial conditions.
    *
    * @param[in] tnNo Total number of mesh nodes for the current rank.
-   * @param[in] owned_nodes_ Initial value of @ref owned_nodes.
    */
-  virtual void init(const unsigned int tnNo,
-                    const Vector<double> &owned_nodes_);
+  virtual void init(const unsigned int tnNo);
 
   /**
    * @brief Begin a new time step.
    *
-   * Stores the current state as the initial condition of the time step and
-   * resets the Aitken relaxation coefficients to @ref relaxation_coefficient.
-   * Must be called once per time step, before any call to @ref update.
+   * Stores the current state as the initial condition of the time step. Must be
+   * called once per time step, before any call to @ref update.
    */
   virtual void time_advance();
 
@@ -224,45 +268,6 @@ public:
    * this to run a fixed-point iteration, calling this function once per
    * nonlinear iteration of the mechanics problem with an updated fiber stretch.
    *
-   * The active tension is relaxed against the value it had before the call. In
-   * terms of the fixed-point residual at node @f$i@f$,
-   * @f[
-   *   r_i^k = \Tact(\astressstate_i^{k+1}, \fiberstretch_i^{k}) - {\Tact}_i^k\;,
-   * @f]
-   * the update reads
-   * @f[
-   *   {\Tact}_i^{k+1} = {\Tact}_i^k + \omega_i^k \, r_i^k\;.
-   * @f]
-   * At the first call of a time step @f${\Tact}_i^k@f$ is the converged active
-   * tension of the previous time step.
-   *
-   * Without Aitken relaxation @f$\omega_i^k@f$ is the constant
-   * @ref relaxation_coefficient. With Aitken relaxation enabled it is instead
-   * re-estimated from the last two residuals. Node-wise, every node gets its
-   * own coefficient from the scalar form of Aitken's @f$\Delta^2@f$ method,
-   * @f[
-   *   \omega_i^{k} = -\omega_i^{k-1} \,
-   *     \frac{r_i^{k-1}}{r_i^{k} - r_i^{k-1}}\;,
-   * @f]
-   * which is the relaxation that would land exactly on the fixed point if the
-   * map were affine at that node. Globally, a single coefficient is shared by
-   * all nodes and comes from the vector form,
-   * @f[
-   *   \omega^{k} = -\omega^{k-1} \,
-   *     \frac{(\mathbf{r}^{k-1})^T (\mathbf{r}^{k} - \mathbf{r}^{k-1})}
-   *          {\|\mathbf{r}^{k} - \mathbf{r}^{k-1}\|^2}\;,
-   * @f]
-   * with the inner products taken over the whole mesh, summed across ranks.
-   *
-   * In both cases the coefficient of the previous iteration is kept where the
-   * formula would divide by zero. @ref relaxation_coefficient provides
-   * @f$\omega^0@f$, which is reset at the beginning of every time step by
-   * @ref time_advance.
-   *
-   * @param[in] cm_mod Parallel communication data, used by the global Aitken
-   *   relaxation to sum the inner products of the residuals across ranks.
-   * @param[in] cm Parallel communicator, used by the global Aitken relaxation
-   *   to sum the inner products of the residuals across ranks.
    * @param[in] t Current time (i.e. the time instant being advanced to).
    * @param[in] dt Time step size.
    * @param[in] calcium Calcium concentration at every node.
@@ -271,8 +276,8 @@ public:
    * @param[in] fiber_stretch_rate Fiber stretch rate at every node. This is
    *   usually computed with post::fib_stretch_rate.
    */
-  virtual void update(const CmMod &cm_mod, const cmType &cm, const double t,
-                      const double dt, const Vector<double> &calcium,
+  virtual void update(const double t, const double dt,
+                      const Vector<double> &calcium,
                       const Vector<double> &fiber_stretch,
                       const Vector<double> &fiber_stretch_rate);
 
@@ -365,19 +370,29 @@ protected:
                                const double fiber_stretch) const = 0;
 
   /**
-   * @brief Re-estimate @ref relaxation from @ref residual and
-   * @ref previous_residual with Aitken's method.
+   * @brief Compute the derivative of the active tension with respect to the
+   * fiber stretch, at fixed state, for a single node.
    *
-   * Does nothing when Aitken relaxation is disabled, or at the first call to
-   * @ref update of a time step, where there is no previous residual to form the
-   * estimate with.
+   * This is the direct dependence of the active tension on the fiber stretch,
+   * the one appearing explicitly in @ref compute_active_tension_local. The
+   * mechanics problem uses it to build the tangent of the active stress, which
+   * is what lets it resolve that dependence by its own nonlinear iterations
+   * rather than by a fixed-point iteration.
    *
-   * @param[in] cm_mod Parallel communication data, used by the global variant
-   *   to sum the inner products of the residuals across ranks.
-   * @param[in] cm Parallel communicator, used by the global variant to sum the
-   *   inner products of the residuals across ranks.
+   * The indirect dependence, through the state, is deliberately left out: it
+   * would require differentiating through the ODE solver of the model.
+   *
+   * The default implementation returns zero, which is correct for the models
+   * whose active tension does not depend on the fiber stretch.
+   *
+   * @param[in] state State vector for a single node.
+   * @param[in] fiber_stretch Fiber stretch at the current node.
    */
-  void update_relaxation(const CmMod &cm_mod, const cmType &cm);
+  virtual double
+  compute_active_tension_derivative_local(const Vector<double> &state,
+                                          const double fiber_stretch) const {
+    return 0.0;
+  }
 
   /// Time instant being advanced to. Set by @ref update.
   double time = 0.0;
@@ -401,90 +416,6 @@ protected:
    * mechanics problem.
    */
   bool implicit_coupling_;
-
-  /**
-   * @brief Relaxation coefficient @f$\omega \in (0, 1]@f$ applied to the active
-   * tension by @ref update.
-   *
-   * With Aitken relaxation enabled this is only the value used at the first
-   * call to @ref update of every time step.
-   */
-  double relaxation_coefficient;
-
-  /**
-   * @brief Whether @ref update re-estimates the relaxation coefficient with
-   * Aitken's method.
-   */
-  bool aitken_relaxation_enabled_;
-
-  /**
-   * @brief Whether Aitken's method estimates a single relaxation coefficient
-   * for the whole mesh rather than an independent one at every node.
-   */
-  bool global_aitken_relaxation_enabled_;
-
-  /**
-   * @brief Relaxation coefficient at every node, applied by @ref update.
-   *
-   * Reset to @ref relaxation_coefficient by @ref time_advance. It stays there
-   * unless Aitken relaxation is enabled, in which case @ref update_relaxation
-   * re-estimates it at every call.
-   */
-  Vector<double> relaxation;
-
-  /**
-   * @brief Relaxation coefficient shared by all nodes when the global Aitken
-   * relaxation is enabled.
-   *
-   * Held separately from @ref relaxation because the recurrence needs the value
-   * of the previous iteration, which is not available on a rank that holds no
-   * node.
-   */
-  double global_relaxation;
-
-  /**
-   * @brief Fixed-point residual of the active tension at every node, as
-   * computed by the current call to @ref update.
-   */
-  Vector<double> residual;
-
-  /**
-   * @brief Fixed-point residual of the active tension at every node, as
-   * computed by the previous call to @ref update within the current time step.
-   *
-   * Unused when Aitken relaxation is disabled.
-   */
-  Vector<double> previous_residual;
-
-  /**
-   * @brief Whether @ref previous_residual holds a residual from the current
-   * time step, i.e. whether @ref update has already been called since the last
-   * @ref time_advance. Aitken's method needs two residuals, so the first call
-   * of a time step keeps the relaxation at its initial value.
-   */
-  bool previous_residual_available = false;
-
-  /**
-   * @brief Marks the nodes this process contributes to sums over the whole
-   * mesh, with 1 at those nodes and 0 at the rest.
-   *
-   * Every process advances the active stress at all of its @c tnNo nodes,
-   * including the ones on a partition boundary, which several processes hold a
-   * copy of. Such a node has to contribute to a sum over the mesh only once, so
-   * exactly one of those processes is marked here. Set by @ref init and only
-   * used by the global Aitken relaxation.
-   *
-   * @todo[michelebucelli] This mask has to be built by the caller and handed
-   * over, because which process a node belongs to is recorded nowhere but in
-   * the node ordering of the linear solver (@c FSILS_lhsType::map and
-   * @c FSILS_lhsType::mynNo). Summing a field defined at the mesh nodes is a
-   * property of the mesh and its partitioning, not of a linear system, and it
-   * should be available as such: an inner product of nodal fields belongs
-   * beside @c all_fun::commu, and this class should call it rather than be
-   * given a mask whose correctness it has no way of checking.
-   */
-  Vector<double> owned_nodes;
-
 
   /// Active tension coefficient along the fiber direction.
   double eta_f;

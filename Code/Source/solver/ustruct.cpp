@@ -249,10 +249,11 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
 
   // USTRUCT: dof = nsd+1
   Vector<int> ptr(eNoN);
-  Vector<double> pSl(nsymd), ya_l_f(eNoN), ya_l_s(eNoN), ya_l_n(eNoN), N(eNoN);
+  Vector<double> pSl(nsymd), N(eNoN);
   Array<double> xl(nsd,eNoN), al(tDof,eNoN), yl(tDof,eNoN), dl(tDof,eNoN),
                 bfl(nsd,eNoN), fN(nsd,nFn), pS0l(nsymd,eNoN), Nx(nsd,eNoN), lR(dof,eNoN);
   Array3<double> lK(dof*dof,eNoN,eNoN), lKd(dof*nsd,eNoN,eNoN);
+  ActiveStressElement active_stress_element;
 
   for (int e = 0; e < lM.nEl; e++) {
     // Change the current domain which will be used in later function calls.
@@ -264,9 +265,6 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
 
     // Create local copies
     fN  = 0.0;
-    ya_l_f = 0.0;
-    ya_l_s = 0.0;
-    ya_l_n = 0.0;
 
     for (int a = 0; a < eNoN; a++) {
       int Ac = lM.IEN(a,e);
@@ -291,12 +289,9 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
         }
       }
 
-      if (eq.dmn[cDmn].active_stress != nullptr) {
-        ya_l_f(a) = cep_mod.cem.Ya_f[Ac];
-        ya_l_s(a) = cep_mod.cem.Ya_s[Ac];
-        ya_l_n(a) = cep_mod.cem.Ya_n[Ac];
-      }
     }
+
+    active_stress_element.gather(eq.dmn[cDmn].active_stress.get(), ptr);
 
     // Initialize residual and tangents
     lR = 0.0;
@@ -341,15 +336,15 @@ void construct_usolid(ComMod& com_mod, CepMod& cep_mod, const mshType& lM, const
         auto N0 = fs[0].N.col(g);
         auto N1 = fs[1].N.col(g);
         ustruct_3d_m(com_mod, cep_mod, vmsStab, fs[0].eNoN, fs[1].eNoN, nFn, w,
-                     Jac, N0, N1, Nwx, al, yl, dl, bfl, fN, ya_l_f, ya_l_s,
-                     ya_l_n, lR, lK, lKd);
+                     Jac, N0, N1, Nwx, al, yl, dl, bfl, fN,
+                     active_stress_element, lR, lK, lKd);
 
       } else if (nsd == 2) {
         auto N0 = fs[0].N.col(g);
         auto N1 = fs[1].N.col(g);
         ustruct_2d_m(com_mod, cep_mod, vmsStab, fs[0].eNoN, fs[1].eNoN, nFn, w,
-                     Jac, N0, N1, Nwx, al, yl, dl, bfl, fN, ya_l_f, ya_l_s,
-                     ya_l_n, lR, lK, lKd);
+                     Jac, N0, N1, Nwx, al, yl, dl, bfl, fN,
+                     active_stress_element, lR, lK, lKd);
       }
 
     } // for g = 0 to fs[0].nG
@@ -878,8 +873,8 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
                   const Vector<double> &Nq, const Array<double> &Nwx,
                   const Array<double> &al, const Array<double> &yl,
                   const Array<double> &dl, const Array<double> &bfl,
-                  const Array<double> &fN, const Vector<double> &ya_l_f,
-                  const Vector<double> &ya_l_s, const Vector<double> &ya_l_n,
+                  const Array<double> &fN,
+                  const ActiveStressElement &active_stress_element,
                   Array<double> &lR, Array3<double> &lK, Array3<double> &lKd) {
   using namespace consts;
   using namespace mat_fun;
@@ -928,10 +923,6 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
   Vector<double> v(2);
   Array<double> vx(2,2), F(2,2);
 
-  double ya_g_f = 0.0;
-  double ya_g_s = 0.0;
-  double ya_g_n = 0.0;
-
   F(0,0) = 1.0;
   F(1,1) = 1.0;
 
@@ -952,13 +943,13 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
     F(1,0) = F(1,0) + Nwx(0,a)*dl(j,a);
     F(1,1) = F(1,1) + Nwx(1,a)*dl(j,a);
 
-    ya_g_f = ya_g_f + Nw(a) * ya_l_f(a);
-    ya_g_s = ya_g_s + Nw(a) * ya_l_s(a);
-    ya_g_n = ya_g_n + Nw(a) * ya_l_n(a);
   }
 
   double Jac = mat_fun::mat_det(F, 2);
   auto Fi = mat_fun::mat_inv(F, 2);
+
+  // Active tension, evaluated here from the fiber stretch of F.
+  const auto Ta = active_stress_element.evaluate(Nw, F, fN);
 
   // Pressure and its time derivative
   //
@@ -974,8 +965,8 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
   // isochoric elasticity tensor in Voigt notation (Dm)
   Array<double> Siso(2,2), Dm(3,3);
   double Ja = 0;
-  mat_models::compute_pk2cc(com_mod, cep_mod, eq.dmn[cDmn], F, nFn, fN, ya_g_f,
-                            ya_g_s, ya_g_n, Siso, Dm, Ja);
+  mat_models::compute_pk2cc(com_mod, cep_mod, eq.dmn[cDmn], F, nFn, fN, Ta,
+                            Siso, Dm, Ja);
 
   // Viscous 2nd Piola-Kirchhoff stress and tangent contributions
   Array<double> Svis(2,2);
@@ -1168,8 +1159,8 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
                   const Vector<double> &Nq, const Array<double> &Nwx,
                   const Array<double> &al, const Array<double> &yl,
                   const Array<double> &dl, const Array<double> &bfl,
-                  const Array<double> &fN, const Vector<double> &ya_l_f,
-                  const Vector<double> &ya_l_s, const Vector<double> &ya_l_n,
+                  const Array<double> &fN,
+                  const ActiveStressElement &active_stress_element,
                   Array<double> &lR, Array3<double> &lK, Array3<double> &lKd) {
   using namespace consts;
   using namespace mat_fun;
@@ -1221,10 +1212,6 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
   Vector<double> v(3);
   Array<double> vx(3,3), F(3,3);
 
-  double ya_g_f = 0.0;
-  double ya_g_s = 0.0;
-  double ya_g_n = 0.0;
-
   F(0,0) = 1.0;
   F(1,1) = 1.0;
   F(2,2) = 1.0;
@@ -1262,13 +1249,13 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
     F(2,1) = F(2,1) + Nwx(1,a)*dl(k,a);
     F(2,2) = F(2,2) + Nwx(2,a)*dl(k,a);
 
-    ya_g_f = ya_g_f + Nw(a) * ya_l_f(a);
-    ya_g_s = ya_g_s + Nw(a) * ya_l_s(a);
-    ya_g_n = ya_g_n + Nw(a) * ya_l_n(a);
   }
 
   double Jac = mat_fun::mat_det(F, 3);
   auto Fi = mat_fun::mat_inv(F, 3);
+
+  // Active tension, evaluated here from the fiber stretch of F.
+  const auto Ta = active_stress_element.evaluate(Nw, F, fN);
 
   // Pressure and its time derivative
   //
@@ -1285,8 +1272,8 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
   //
   Array<double> Siso(3,3), Dm(6,6);
   double Ja = 0;
-  mat_models::compute_pk2cc(com_mod, cep_mod, eq.dmn[cDmn], F, nFn, fN, ya_g_f,
-                            ya_g_s, ya_g_n, Siso, Dm, Ja);
+  mat_models::compute_pk2cc(com_mod, cep_mod, eq.dmn[cDmn], F, nFn, fN, Ta,
+                            Siso, Dm, Ja);
 
   // Viscous 2nd Piola-Kirchhoff stress and tangent contributions
   Array<double> Svis(3,3);

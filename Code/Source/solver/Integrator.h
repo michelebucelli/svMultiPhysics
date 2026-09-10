@@ -200,9 +200,9 @@ private:
    * @param[in] fiber_stretch_rate Fiber stretch rate at every node.
    * @param[in] within_nonlinear_iterations True when called within the
    *   nonlinear iterations, in which case only the models with implicit
-   *   coupling are advanced again, with relaxation. False when called once per
-   *   time step from the predictor, in which case all models are advanced by
-   *   one time step without relaxation.
+   *   coupling are advanced again, from the state stored at the beginning of
+   *   the time step. False when called once per time step from the predictor,
+   *   in which case all models store that state and are advanced from it.
    */
   void update_active_stress(eqType& eq, const Vector<double>& fiber_stretch,
                             const Vector<double>& fiber_stretch_rate,

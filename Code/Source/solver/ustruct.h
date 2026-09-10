@@ -4,6 +4,7 @@
 #ifndef USTRUCT_H 
 #define USTRUCT_H 
 
+#include "ActiveStressElement.h"
 #include "ComMod.h"
 #include "SolutionStates.h"
 
@@ -35,8 +36,8 @@ void ustruct_2d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
                   const Vector<double> &Nq, const Array<double> &Nwx,
                   const Array<double> &al, const Array<double> &yl,
                   const Array<double> &dl, const Array<double> &bfl,
-                  const Array<double> &fN, const Vector<double> &ya_l_f,
-                  const Vector<double> &ya_l_s, const Vector<double> &ya_l_n,
+                  const Array<double> &fN,
+                  const ActiveStressElement &active_stress_element,
                   Array<double> &lR, Array3<double> &lK, Array3<double> &lKd);
 
 void ustruct_3d_c(ComMod& com_mod, CepMod& cep_mod, const bool vmsFlag, const int eNoNw, const int eNoNq,
@@ -51,8 +52,8 @@ void ustruct_3d_m(ComMod &com_mod, CepMod &cep_mod, const bool vmsFlag,
                   const Vector<double> &Nq, const Array<double> &Nwx,
                   const Array<double> &al, const Array<double> &yl,
                   const Array<double> &dl, const Array<double> &bfl,
-                  const Array<double> &fN, const Vector<double> &ya_l_f,
-                  const Vector<double> &ya_l_s, const Vector<double> &ya_l_n,
+                  const Array<double> &fN,
+                  const ActiveStressElement &active_stress_element,
                   Array<double> &lR, Array3<double> &lK, Array3<double> &lKd);
 
 void ustruct_do_assem(ComMod& com_mod, const int d, const Vector<int>& eqN, const Array3<double>& lKd, 

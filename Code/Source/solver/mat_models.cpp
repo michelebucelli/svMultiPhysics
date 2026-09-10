@@ -101,56 +101,35 @@ void cc_to_voigt(const int nsd, const Tensor4<double>& CC, Array<double>& Dm)
   } 
 }
 
+/**
+ * @brief Write a 4th order elasticity tensor in Voigt notation.
+ *
+ * Every entry is read from the tensor independently, so that an elasticity
+ * tensor that is not major symmetric is written faithfully. Active stress
+ * produces such a tensor, since it does not derive from a strain energy.
+ */
 template <int nsd>
 void cc_to_voigt_eigen(const Tensor<nsd>& CC, Matrix<3*(nsd-1)>& Dm)
 {
-  if (nsd == 3) {
-    Dm(0,0) = CC(0,0,0,0);
-    Dm(0,1) = CC(0,0,1,1);
-    Dm(0,2) = CC(0,0,2,2);
-    Dm(0,3) = CC(0,0,0,1);
-    Dm(0,4) = CC(0,0,1,2);
-    Dm(0,5) = CC(0,0,2,0);
+  // Index pairs of the tensor corresponding to each index in Voigt notation.
+  constexpr int n_voigt = 3 * (nsd - 1);
+  constexpr int voigt_row[6] = {0, 1, 2, 0, 1, 2};
+  constexpr int voigt_col[6] = {0, 1, 2, 1, 2, 0};
 
-    Dm(1,1) = CC(1,1,1,1);
-    Dm(1,2) = CC(1,1,2,2);
-    Dm(1,3) = CC(1,1,0,1);
-    Dm(1,4) = CC(1,1,1,2);
-    Dm(1,5) = CC(1,1,2,0);
+  // In 2D the only shear index is (0,1), which sits in the fourth entry of the
+  // maps above rather than in the third.
+  constexpr int voigt_2d_row[3] = {0, 1, 0};
+  constexpr int voigt_2d_col[3] = {0, 1, 1};
 
-    Dm(2,2) = CC(2,2,2,2);
-    Dm(2,3) = CC(2,2,0,1);
-    Dm(2,4) = CC(2,2,1,2);
-    Dm(2,5) = CC(2,2,2,0);
+  for (int i = 0; i < n_voigt; i++) {
+    for (int j = 0; j < n_voigt; j++) {
+      const int i_row = (nsd == 3) ? voigt_row[i] : voigt_2d_row[i];
+      const int i_col = (nsd == 3) ? voigt_col[i] : voigt_2d_col[i];
+      const int j_row = (nsd == 3) ? voigt_row[j] : voigt_2d_row[j];
+      const int j_col = (nsd == 3) ? voigt_col[j] : voigt_2d_col[j];
 
-    Dm(3,3) = CC(0,1,0,1);
-    Dm(3,4) = CC(0,1,1,2);
-    Dm(3,5) = CC(0,1,2,0);
-
-    Dm(4,4) = CC(1,2,1,2);
-    Dm(4,5) = CC(1,2,2,0);
-
-    Dm(5,5) = CC(2,0,2,0);
-
-    for (int i = 1; i < 6; i++) {
-      for (int j = 0; j <= i-1; j++) {
-        Dm(i,j) = Dm(j,i);
-      }
+      Dm(i,j) = CC(i_row, i_col, j_row, j_col);
     }
-
-  } else if (nsd == 2) {
-    Dm(0,0) = CC(0,0,0,0);
-    Dm(0,1) = CC(0,0,1,1);
-    Dm(0,2) = CC(0,0,0,1);
-
-    Dm(1,1) = CC(1,1,1,1);
-    Dm(1,2) = CC(1,1,0,1);
-
-    Dm(2,2) = CC(0,1,0,1);
-
-    Dm(1,0) = Dm(0,1);
-    Dm(2,0) = Dm(0,2);
-    Dm(2,1) = Dm(1,2);
   }
 }
 
@@ -291,8 +270,8 @@ template <size_t nsd>
 void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
                    const dmnType &lDmn, const Matrix<nsd> &F, const int nfd,
                    const Eigen::Matrix<double, nsd, Eigen::Dynamic> fl,
-                   const double ya_f, const double ya_s, const double ya_n,
-                   Matrix<nsd> &S, Matrix<3 * (nsd - 1)> &Dm, double &Ja) {
+                   const ActiveTension &active_tension, Matrix<nsd> &S,
+                   Matrix<3 * (nsd - 1)> &Dm, double &Ja) {
   using namespace consts;
   using namespace mat_fun;
   using namespace utils;
@@ -321,9 +300,9 @@ void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
 
   // Active stress from active stress models, already distributed among the
   // fiber, sheet and sheet-normal directions by the active stress model.
-  double Tfa = ya_f;  // Fiber direction
-  double Tsa = ya_s;  // Sheet direction
-  double Tna = ya_n;  // Sheet-normal direction
+  double Tfa = active_tension.fibers;         // Fiber direction
+  double Tsa = active_tension.sheets;         // Sheet direction
+  double Tna = active_tension.sheet_normals;  // Sheet-normal direction
 
   // Aliases for fiber directions
   const auto& fib_dir1 = fl.col(0);
@@ -772,19 +751,57 @@ void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
   svmp::check<svmp::InternalErrorException>(
       nfd >= 1,
       "At least one fiber direction must be defined for active stress.");
+
+  // Derivative of the active stress with respect to the fiber stretch, at fixed
+  // state of the active stress model. Accumulated along with the active stress
+  // itself, and used below to build its tangent.
+  const bool has_tangent = !utils::is_zero(active_tension.d_fibers) ||
+                           !utils::is_zero(active_tension.d_sheets) ||
+                           !utils::is_zero(active_tension.d_sheet_normals);
+
+  Matrix<nsd> dS_act = active_tension.d_fibers * Hff;
+
   S += Tfa * Hff;
 
-  if (!utils::is_zero(Tsa)) {
+  if (!utils::is_zero(Tsa) || !utils::is_zero(active_tension.d_sheets)) {
     svmp::check<svmp::InternalErrorException>(
         nfd >= 2, "Directional distribution of active stress (eta_s > 0) "
                   "requires a sheet direction, "
                   "but only one fiber direction is defined.");
     S += Tsa * Hss;
+    dS_act += active_tension.d_sheets * Hss;
   }
 
-  if (!utils::is_zero(Tna)) {
+  if (!utils::is_zero(Tna) || !utils::is_zero(active_tension.d_sheet_normals)) {
     auto fib_dir3 = compute_sheet_normal<nsd>(fl);
-    S += Tna * (fib_dir3 * fib_dir3.transpose());
+    const Matrix<nsd> Hnn = fib_dir3 * fib_dir3.transpose();
+    S += Tna * Hnn;
+    dS_act += active_tension.d_sheet_normals * Hnn;
+  }
+
+  // Tangent of the active stress.
+  //
+  // The active stress depends on the deformation through the fiber stretch
+  // @f$\lambda = |F f_0| = \sqrt{C : H_{ff}}@f$, so that
+  // @f$\partial\lambda/\partial C = H_{ff} / (2\lambda)@f$ and
+  // @f[
+  //   CC_\text{act} = 2 \frac{\partial S_\text{act}}{\partial C}
+  //     = \frac{1}{\lambda} \frac{\partial S_\text{act}}{\partial\lambda}
+  //       \otimes H_{ff} \;.
+  // @f]
+  //
+  // Only the direct dependence of the active stress on the fiber stretch is
+  // differentiated here. The active stress also depends on it through the state
+  // of the active stress model, but differentiating that would mean
+  // differentiating through the ODE solver of the model, so it is left to the
+  // nonlinear iterations of the mechanics problem to resolve.
+  //
+  // Notice that this tangent is not major symmetric, unless the active stress
+  // acts along the fiber direction alone: the active stress does not derive
+  // from a strain energy, so nothing requires it to be.
+  if (has_tangent) {
+    const double fiber_stretch = sqrt(fib_dir1.dot(C * fib_dir1));
+    CC += (1.0 / fiber_stretch) * dyadic_product<nsd>(dS_act, Hff);
   }
 
   // Convert to Voigt Notation
@@ -798,7 +815,7 @@ void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
  * 
  */
 void compute_pk2cc(const ComMod& com_mod, const CepMod& cep_mod, const dmnType& lDmn, const Array<double>& F, const int nfd,
-    const Array<double>& fl, const double ya_f, const double ya_s, const double ya_n, Array<double>& S, Array<double>& Dm, double& Ja)
+    const Array<double>& fl, const ActiveTension& active_tension, Array<double>& S, Array<double>& Dm, double& Ja)
 {
     // Number of spatial dimensions
     int nsd = com_mod.nsd;
@@ -819,7 +836,7 @@ void compute_pk2cc(const ComMod& com_mod, const CepMod& cep_mod, const dmnType& 
         Eigen::Matrix3d Dm_2D = Eigen::Matrix3d::Zero();
 
         // Call templated function
-        compute_pk2cc<2>(com_mod, cep_mod, lDmn, F_2D, nfd, fl_2D, ya_f, ya_s, ya_n, S_2D, Dm_2D, Ja);
+        compute_pk2cc<2>(com_mod, cep_mod, lDmn, F_2D, nfd, fl_2D, active_tension, S_2D, Dm_2D, Ja);
 
         // Copy results back
         mat_fun::convert_to_array(S_2D, S);
@@ -843,7 +860,7 @@ void compute_pk2cc(const ComMod& com_mod, const CepMod& cep_mod, const dmnType& 
         Dm_3D.setZero();
 
         // Call templated function
-        compute_pk2cc<3>(com_mod, cep_mod, lDmn, F_3D, nfd, fl_3D, ya_f, ya_s, ya_n, S_3D, Dm_3D, Ja);
+        compute_pk2cc<3>(com_mod, cep_mod, lDmn, F_3D, nfd, fl_3D, active_tension, S_3D, Dm_3D, Ja);
 
         // Copy results back
         mat_fun::convert_to_array(S_3D, S);

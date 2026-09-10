@@ -57,10 +57,8 @@ public:
    * coefficient from file.
    *
    * @param[in] tnNo Total number of mesh nodes for the current rank.
-   * @param[in] owned_nodes_ Initial value of @ref owned_nodes.
    */
-  virtual void init(const unsigned int tnNo,
-                    const Vector<double> &owned_nodes_) override;
+  virtual void init(const unsigned int tnNo) override;
 
 protected:
   /**

@@ -3,6 +3,7 @@
 
 #include "post.h"
 
+#include "ActiveStressElement.h"
 #include "FE/Common/FEException.h"
 #include "all_fun.h"
 #include "fluid.h"
@@ -1711,6 +1712,8 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
   Vector<double> resl(m); 
   Array<double> Nx(nsd,fs.eNoN); 
   Vector<double> N(fs.eNoN);
+  Vector<int> element_nodes(fs.eNoN);
+  ActiveStressElement active_stress_element;
 
   int insd = nsd;
   if (lM.lFib) {
@@ -1759,6 +1762,7 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
 
     for (int a = 0; a < fs.eNoN; a++) {
       int Ac = lM.IEN(a,e);
+      element_nodes(a) = Ac;
       for (int i = 0; i < nsd; i++) {
         xl(i,a) = com_mod.x(i,Ac);
       }
@@ -1767,6 +1771,9 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
         yl(i,a) = lY(i,Ac);
       }
     }
+
+    active_stress_element.gather(eq.dmn[cDmn].active_stress.get(),
+                                 element_nodes);
 
     Je = 0.0;
     double Jac = 0.0;
@@ -1863,20 +1870,10 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
           Array<double> sigma(nsd,nsd);
           Array<double> S(nsd,nsd);
 
-          // Interpolate the active stress from active stress models to the
-          // current Gauss point so that the active contribution is included in
-          // the reported stress, consistently with the residual assembly.
-          double ya_g_f = 0.0;
-          double ya_g_s = 0.0;
-          double ya_g_n = 0.0;
-          if (eq.dmn[cDmn].active_stress != nullptr) {
-            for (int a = 0; a < fs.eNoN; a++) {
-              int Ac = lM.IEN(a,e);
-              ya_g_f = ya_g_f + N(a)*cep_mod.cem.Ya_f[Ac];
-              ya_g_s = ya_g_s + N(a)*cep_mod.cem.Ya_s[Ac];
-              ya_g_n = ya_g_n + N(a)*cep_mod.cem.Ya_n[Ac];
-            }
-          }
+          // Evaluate the active stress at the current Gauss point, the same
+          // way the residual assembly does, so that the active contribution to
+          // the reported stress matches the one the solver used.
+          const auto Ta = active_stress_element.evaluate(N, F, fN);
 
           if (cPhys == EquationType::phys_lElas) {
             if (nsd == 3) {
@@ -1911,7 +1908,7 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
             double Ja;
 
             mat_models::compute_pk2cc(com_mod, cep_mod, eq.dmn[cDmn], F, nFn,
-                                      fN, ya_g_f, ya_g_s, ya_g_n, S, Dm, Ja);
+                                      fN, Ta, S, Dm, Ja);
 
             // TODO: Add viscous stress
 
@@ -1931,7 +1928,7 @@ void tpost(Simulation* simulation, const mshType& lM, const int m, Array<double>
             double Ja;
 
             mat_models::compute_pk2cc(com_mod, cep_mod, eq.dmn[cDmn], F, nFn,
-                                      fN, ya_g_f, ya_g_s, ya_g_n, S, Dm, Ja);
+                                      fN, Ta, S, Dm, Ja);
 
             // TODO: Add viscous stress
 

@@ -492,7 +492,6 @@ bool Integrator::has_implicit_active_stress() const {
 void Integrator::update_active_stress(eqType& eq, const Vector<double>& fiber_stretch,
     const Vector<double>& fiber_stretch_rate, const bool within_nonlinear_iterations) {
   auto& com_mod = simulation_->com_mod;
-  auto& cm_mod = simulation_->cm_mod;
   auto& cep_mod = simulation_->get_cep_mod();
 
   for (auto &dmn : eq.dmn) {
@@ -507,12 +506,15 @@ void Integrator::update_active_stress(eqType& eq, const Vector<double>& fiber_st
     if (!within_nonlinear_iterations)
       dmn.active_stress->time_advance();
 
-    dmn.active_stress->update(cm_mod, com_mod.cm, com_mod.time, com_mod.dt,
-                              cep_mod.calcium, fiber_stretch,
-                              fiber_stretch_rate);
+    dmn.active_stress->update(com_mod.time, com_mod.dt, cep_mod.calcium,
+                              fiber_stretch, fiber_stretch_rate);
   }
 
-  // Fill in the active tension vector.
+  // Fill in the nodal active tension vector. This is what gets written to the
+  // output and restart files; the mechanics problem does not read it, because
+  // it evaluates the active tension at its quadrature points instead (see
+  // ActiveStressElement).
+  //
   // We go through all mesh nodes, find the domain they are associated with,
   // and get the active stress from that domain. If a point is associated to
   // multiple domains (which happens for points on domain interfaces), we

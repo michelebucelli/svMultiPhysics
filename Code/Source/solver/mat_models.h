@@ -4,6 +4,7 @@
 #ifndef MAT_MODELS_H 
 #define MAT_MODELS_H 
 
+#include "ActiveStress.h"
 #include "Array.h"
 #include "CepMod.h"
 #include "ComMod.h"
@@ -37,9 +38,11 @@ void voigt_to_cc(const int nsd, const Array<double>& Dm, Tensor4<double>& CC);
  * @param[in] F Deformation gradient tensor.
  * @param[in] nfd Number of fiber directions.
  * @param[in] fl Fiber directions.
- * @param[in] ya_f Active tension along the fiber direction.
- * @param[in] ya_s Active tension along the sheet direction.
- * @param[in] ya_n Active tension along the sheet-normal direction.
+ * @param[in] active_tension Active tension along the fiber, sheet and
+ *   sheet-normal directions, and its derivatives with respect to the fiber
+ *   stretch. The derivatives contribute the tangent of the active stress to
+ *   @p Dm, which is therefore not symmetric unless the active stress acts along
+ *   the fiber direction alone.
  * @param[out] S 2nd Piola-Kirchhoff stress tensor (modified in place).
  * @param[out] Dm Material stiffness tensor (modified in place).
  * @param[out] Ja Jacobian for active strain
@@ -48,8 +51,8 @@ void voigt_to_cc(const int nsd, const Array<double>& Dm, Tensor4<double>& CC);
  */
 void compute_pk2cc(const ComMod &com_mod, const CepMod &cep_mod,
                    const dmnType &lDmn, const Array<double> &F, const int nfd,
-                   const Array<double> &fl, const double ya_f,
-                   const double ya_s, const double ya_n, Array<double> &S,
+                   const Array<double> &fl,
+                   const ActiveTension &active_tension, Array<double> &S,
                    Array<double> &Dm, double &Ja);
 
 void compute_pk2cc_shlc(const ComMod& com_mod, const dmnType& lDmn, const int nfd, const Array<double>& fNa0,
