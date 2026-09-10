@@ -14,7 +14,7 @@ void ActiveStress::read_parameters(const ActiveStressParameters &params) {
   eta_s = params.get_eta_s();
   eta_n = params.get_eta_n();
 
-  implicit_coupling_ = params.get_implicit_coupling();
+  implicit_state_coupling_ = params.get_implicit_state_coupling();
 
   read_model_specific_parameters(
       params.get_parameters(params.get_model_name()));
@@ -26,7 +26,7 @@ void ActiveStress::distribute_parameters(const CmMod &cm_mod,
   cm.bcast(cm_mod, &eta_s);
   cm.bcast(cm_mod, &eta_n);
 
-  cm.bcast(cm_mod, &implicit_coupling_);
+  cm.bcast(cm_mod, &implicit_state_coupling_);
 
   distribute_model_specific_parameters(cm_mod, cm);
 }

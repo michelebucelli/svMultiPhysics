@@ -136,15 +136,23 @@ struct ActiveTension {
  * are then computed by @ref update, which can be called any number of times
  * within the step, always restarting from that stored state.
  *
- * By default the two-way coupling is treated explicitly: @ref update is called
- * once per time step, before the nonlinear iterations of the mechanics problem,
- * with the fiber stretch of the previous time step. If @c Implicit_coupling is
- * enabled, @ref update is called again at every nonlinear iteration with the
- * fiber stretch of the current displacement iterate, so that at convergence the
- * active tension and the displacement satisfy the coupled problem at the same
- * time level. The coupling is closed by a fixed-point iteration, without
- * including the derivative of the active tension with respect to the fiber
- * stretch in the tangent matrix.
+ * The two dependences are resolved differently. The direct one is always
+ * implicit: the mechanics problem evaluates the active tension at its own
+ * quadrature points, against the fiber stretch of the deformation gradient it
+ * is assembling (see @ref ActiveStressElement), and it builds the tangent of
+ * the resulting active stress from
+ * @ref compute_active_tension_derivative_local, so its own nonlinear
+ * iterations resolve it.
+ *
+ * The indirect one is explicit by default: @ref update is called once per time
+ * step, before the nonlinear iterations of the mechanics problem, with the
+ * fiber stretch of the previous time step, and the state is then held fixed for
+ * the whole step. If @c Implicit_state_coupling is enabled, @ref update is
+ * called again at every nonlinear iteration with the fiber stretch of the
+ * current displacement iterate, turning the indirect dependence into a
+ * fixed-point iteration nested in the nonlinear ones. Its tangent is not
+ * assembled, since that would mean differentiating through the ODE solver of
+ * the model.
  */
 class ActiveStress {
 public:
@@ -264,8 +272,8 @@ public:
    *
    * This function may be called more than once per time step: every call
    * restarts from the state stored by @ref time_advance, so the resulting state
-   * depends only on the arguments of the last call. The implicit coupling uses
-   * this to run a fixed-point iteration, calling this function once per
+   * depends only on the arguments of the last call. The implicit state coupling
+   * uses this to run a fixed-point iteration, calling this function once per
    * nonlinear iteration of the mechanics problem with an updated fiber stretch.
    *
    * @param[in] t Current time (i.e. the time instant being advanced to).
@@ -282,10 +290,11 @@ public:
                       const Vector<double> &fiber_stretch_rate);
 
   /**
-   * @brief Whether this model is updated within the nonlinear iterations of the
-   * mechanics problem, i.e. whether the coupling is implicit.
+   * @brief Whether the state of this model is updated within the nonlinear
+   * iterations of the mechanics problem, i.e. whether the indirect dependence
+   * of the active tension on the fiber stretch is treated implicitly.
    */
-  bool implicit_coupling() const { return implicit_coupling_; }
+  bool implicit_state_coupling() const { return implicit_state_coupling_; }
 
   /// Number of state variables for this model.
   const unsigned int n_states;
@@ -412,10 +421,10 @@ protected:
   Vector<double> active_tension;
 
   /**
-   * @brief Whether this model is updated within the nonlinear iterations of the
-   * mechanics problem.
+   * @brief Whether the state of this model is updated within the nonlinear
+   * iterations of the mechanics problem.
    */
-  bool implicit_coupling_;
+  bool implicit_state_coupling_;
 
   /// Active tension coefficient along the fiber direction.
   double eta_f;

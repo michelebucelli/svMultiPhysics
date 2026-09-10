@@ -184,12 +184,12 @@ private:
                              Vector<double>& fiber_stretch_rate);
 
   /**
-   * @brief Whether any domain uses an active stress model with implicit
-   * coupling, i.e. one that is updated within the nonlinear iterations.
+   * @brief Whether any domain uses an active stress model with implicit state
+   * coupling, i.e. one whose state is updated within the nonlinear iterations.
    *
    * @return True if at least one such domain exists, false otherwise.
    */
-  bool has_implicit_active_stress() const;
+  bool has_implicit_active_stress_state_coupling() const;
 
   /**
    * @brief Update the active stress models of an equation and the resulting

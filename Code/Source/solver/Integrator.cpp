@@ -110,11 +110,14 @@ bool Integrator::step(bool save_results) {
     // Compute body forces
     set_body_forces();
 
-    // Implicit coupling of the active stress: re-evaluate the active tension
-    // from the displacement of the current nonlinear iterate, so that its
-    // dependence on the fiber stretch is resolved by a fixed-point iteration
-    // nested in the nonlinear loop.
-    if (supports_active_stress(eq.phys) && has_implicit_active_stress()) {
+    // Implicit state coupling of the active stress: re-advance the state of the
+    // active stress model from the displacement of the current nonlinear
+    // iterate, so that the indirect dependence of the active tension on the
+    // fiber stretch is resolved by a fixed-point iteration nested in the
+    // nonlinear loop. The direct dependence is resolved by the nonlinear
+    // iterations themselves, through the tangent of the active stress.
+    if (supports_active_stress(eq.phys) &&
+        has_implicit_active_stress_state_coupling()) {
       Vector<double> fiber_stretch;
       Vector<double> fiber_stretch_rate;
       compute_fiber_stretch(fiber_stretch, fiber_stretch_rate);
@@ -468,9 +471,9 @@ void Integrator::compute_fiber_stretch(Vector<double>& fiber_stretch, Vector<dou
 }
 
 //------------------------
-// has_implicit_active_stress
+// has_implicit_active_stress_state_coupling
 //------------------------
-bool Integrator::has_implicit_active_stress() const {
+bool Integrator::has_implicit_active_stress_state_coupling() const {
   const auto& com_mod = simulation_->com_mod;
 
   for (const auto &eq : com_mod.eq) {
@@ -478,7 +481,8 @@ bool Integrator::has_implicit_active_stress() const {
       continue;
 
     for (const auto &dmn : eq.dmn) {
-      if (dmn.active_stress != nullptr && dmn.active_stress->implicit_coupling())
+      if (dmn.active_stress != nullptr &&
+          dmn.active_stress->implicit_state_coupling())
         return true;
     }
   }
@@ -498,9 +502,10 @@ void Integrator::update_active_stress(eqType& eq, const Vector<double>& fiber_st
     if (dmn.active_stress == nullptr)
       continue;
 
-    // Models with explicit coupling keep the active tension computed by the
+    // Models with explicit state coupling keep the state computed by the
     // predictor for the whole time step, so they are only updated once.
-    if (within_nonlinear_iterations && !dmn.active_stress->implicit_coupling())
+    if (within_nonlinear_iterations &&
+        !dmn.active_stress->implicit_state_coupling())
       continue;
 
     if (!within_nonlinear_iterations)

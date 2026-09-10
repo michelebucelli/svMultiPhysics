@@ -47,9 +47,10 @@
  *
  * @note Both the direct dependence of @f$\Tact@f$ on the fiber stretch and the
  * force-strain-rate feedback make the active tension a function of the
- * mechanics solution. Treating that dependence explicitly can be unstable in
- * time; enabling @c Implicit_coupling resolves it within the nonlinear
- * iterations of the mechanics problem instead (see @ref ActiveStress).
+ * mechanics solution. Treating those dependences explicitly can be unstable in
+ * time. The direct one is always resolved within the nonlinear iterations of
+ * the mechanics problem; enabling @c Implicit_state_coupling resolves the
+ * indirect one there too (see @ref ActiveStress).
  */
 class ActiveStressRegazzoni : public ActiveStress {
 public:
