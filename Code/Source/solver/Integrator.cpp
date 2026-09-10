@@ -112,10 +112,7 @@ bool Integrator::step(bool save_results) {
 
     // Implicit state coupling of the active stress: re-advance the state of the
     // active stress model from the displacement of the current nonlinear
-    // iterate, so that the indirect dependence of the active tension on the
-    // fiber stretch is resolved by a fixed-point iteration nested in the
-    // nonlinear loop. The direct dependence is resolved by the nonlinear
-    // iterations themselves, through the tangent of the active stress.
+    // iterate.
     if (supports_active_stress(eq.phys) &&
         has_implicit_active_stress_state_coupling()) {
       Vector<double> fiber_stretch;

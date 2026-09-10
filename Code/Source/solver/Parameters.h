@@ -1550,10 +1550,7 @@ protected:
   Parameter<std::string> model_name;
 
   /// Parameter selecting whether the state of the active stress model is
-  /// updated within the nonlinear iterations of the mechanics problem, making
-  /// the indirect dependence of the active tension on the fiber stretch, the
-  /// one through the state, implicit rather than explicit. The direct
-  /// dependence is implicit either way.
+  /// updated within the nonlinear iterations of the mechanics problem.
   Parameter<bool> implicit_state_coupling;
 
   /// Parameters for the directional distribution of active tension.

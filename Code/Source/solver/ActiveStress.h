@@ -88,10 +88,11 @@ bool supports_active_stress(const consts::EquationType eq_type);
  * To implement a new active stress model, the following steps need to be taken:
  *
  * 1. Create a new class derived from @ref ActiveStress.
- * 2. Override the methods @ref init_local, @ref advance_time_step_local and
- *    @ref compute_active_tension_local, defining the initial condition,
- *    time evolution and active tension computation, respectively, for a single
- *    node.
+ * 2. Override the methods @ref init_local, @ref advance_time_step_local,
+ *    @ref compute_active_tension_local and
+ *    @ref compute_active_tension_derivative_local, defining the initial
+ *    condition, time evolution, active tension and its partial derivative with
+ *    respect to the fiber stretch, respectively, for a single node.
  * 3. Create a new class derived from @ref ActiveStressModelParameters to store
  *    the parameters specific to the new active stress model.
  * 4. Override the methods @ref get_parameters,
@@ -169,40 +170,17 @@ public:
   };
 
   /**
-   * @brief Evaluates the active tension of an element at its quadrature
-   * points.
+   * @brief Helper to evaluate active tension at quadrature points.
    *
-   * An active stress model holds its state at the mesh nodes, because that is
-   * where the fiber stretch driving its ODE is available. The mechanics
-   * problem, however, needs the active tension at the quadrature points of an
-   * element.
-   *
-   * This class bridges the two. @ref update copies the nodal state of an
-   * element once, and @ref evaluate interpolates it to a quadrature point and
-   * evaluates the active tension there, against the fiber stretch of the
-   * deformation gradient being assembled.
-   *
-   * Evaluating the tension at the quadrature point, rather than at the nodes,
-   * makes its dependence on the fiber stretch local to the element: the
-   * stretch comes from the deformation gradient of that quadrature point
-   * alone, and not from the L2 projection of the stretch onto the mesh nodes,
-   * which averages over a patch of elements.
-   *
-   * The state is the one the active stress model was last advanced to, and it
-   * is held fixed by this class: only the direct dependence of the active
-   * tension on the fiber stretch is resolved here, while its indirect
-   * dependence, through the state, is resolved by the nonlinear iterations of
-   * the mechanics problem.
-   *
-   * This class is a friend of @ref ActiveStress, so that @ref update can copy
-   * the state directly out of @ref ActiveStress::states rather than through an
-   * accessor.
+   * The active stress model stores the state at the degrees of freedom, but the
+   * active tension needs to be evaluated at quadrature points. This class
+   * allows to do that by interpolating the state to quadrature points and then
+   * evaluating the active tension there.
    */
   class Evaluator {
   public:
     /**
-     * @brief Update the state held by this evaluator from an active stress
-     * model, at the nodes of one element.
+     * @brief Update the evaluator for a given element.
      *
      * @param[in] active_stress Active stress model of the domain the element
      *   belongs to.
@@ -225,8 +203,11 @@ public:
      *   the state was gathered at by @ref update.
      * @param[in] F Deformation gradient at the quadrature point.
      * @param[in] fN Fiber directions of the element, the first column being
-     *   the fiber direction itself. Only read by the models that use the
-     *   fiber stretch.
+     *   the fiber direction itself.
+     *
+     * @return Active tension along fibers, sheets and sheet normals, and their
+     *   derivatives with respect to the fiber stretch, bundled in an object of
+     *   type @ref ActiveTension.
      */
     ActiveTension evaluate(const Vector<double> &N, const Array<double> &F,
                            const Array<double> &fN) const;
@@ -350,9 +331,7 @@ public:
    *
    * This function may be called more than once per time step: every call
    * restarts from the state stored by @ref time_advance, so the resulting state
-   * depends only on the arguments of the last call. The implicit state coupling
-   * uses this to run a fixed-point iteration, calling this function once per
-   * nonlinear iteration of the mechanics problem with an updated fiber stretch.
+   * depends only on the arguments of the last call.
    *
    * @param[in] t Current time (i.e. the time instant being advanced to).
    * @param[in] dt Time step size.
@@ -368,16 +347,6 @@ public:
                       const Vector<double> &fiber_stretch_rate);
 
   /**
-   * @brief Whether the state of this model is updated within the nonlinear
-   * iterations of the mechanics problem, i.e. whether the indirect dependence
-   * of the active tension on the fiber stretch is treated implicitly.
-   */
-  bool implicit_state_coupling() const { return implicit_state_coupling_; }
-
-  /// Number of state variables for this model.
-  const unsigned int n_states;
-
-  /**
    * @brief Whether this model uses the fiber stretch passed to @ref update.
    * This flag can be used to determine whether fiber stretch computation can be
    * skipped for efficiency.
@@ -391,17 +360,17 @@ public:
    */
   bool needs_fiber_stretch_rate() const { return needs_fiber_stretch_rate_; }
 
+  /**
+   * @brief Whether the state of this model is updated within the nonlinear
+   * iterations of the mechanics problem, i.e. whether the indirect dependence
+   * of the active tension on the fiber stretch is treated implicitly.
+   */
+  bool implicit_state_coupling() const { return implicit_state_coupling_; }
+
+  /// Number of state variables for this model.
+  const unsigned int n_states;
+
 protected:
-  /**
-   * @brief Backing store for @ref needs_fiber_stretch.
-   */
-  bool needs_fiber_stretch_;
-
-  /**
-   * @brief Backing store for @ref needs_fiber_stretch_rate.
-   */
-  bool needs_fiber_stretch_rate_;
-
   /**
    * @brief Read model parameters from a parameter object.
    *
@@ -457,29 +426,25 @@ protected:
                                const double fiber_stretch) const = 0;
 
   /**
-   * @brief Compute the derivative of the active tension with respect to the
-   * fiber stretch, at fixed state, for a single node.
-   *
-   * This is the direct dependence of the active tension on the fiber stretch,
-   * the one appearing explicitly in @ref compute_active_tension_local. The
-   * mechanics problem uses it to build the tangent of the active stress, which
-   * is what lets it resolve that dependence by its own nonlinear iterations
-   * rather than by a fixed-point iteration.
-   *
-   * The indirect dependence, through the state, is deliberately left out: it
-   * would require differentiating through the ODE solver of the model.
-   *
-   * The default implementation returns zero, which is correct for the models
-   * whose active tension does not depend on the fiber stretch.
+   * @brief Compute the partial derivative of the active tension with respect to
+   * the fiber stretch, at fixed state, for a single node.
    *
    * @param[in] state State vector for a single node.
    * @param[in] fiber_stretch Fiber stretch at the current node.
    */
   virtual double
   compute_active_tension_derivative_local(const Vector<double> &state,
-                                          const double fiber_stretch) const {
-    return 0.0;
-  }
+                                          const double fiber_stretch) const = 0;
+
+  /**
+   * @brief Backing store for @ref needs_fiber_stretch.
+   */
+  bool needs_fiber_stretch_;
+
+  /**
+   * @brief Backing store for @ref needs_fiber_stretch_rate.
+   */
+  bool needs_fiber_stretch_rate_;
 
   /// Time instant being advanced to. Set by @ref update.
   double time = 0.0;
@@ -495,7 +460,13 @@ protected:
    */
   Array<double> states_at_time_step_start;
 
-  /// Active tension at every node.
+  /**
+   * @brief Active tension at every node.
+   *
+   * This is only used for postprocessing and output purposes. When assembling
+   * structural mechanics problems, the active tension is evaluated at
+   * quadrature points through the class @ref Evaluator.
+   */
   Vector<double> active_tension;
 
   /**
