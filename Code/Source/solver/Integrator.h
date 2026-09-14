@@ -9,6 +9,8 @@
 #include "Vector.h"
 #include "Simulation.h"
 
+#include <string>
+
 /**
  * @brief Integrator class encapsulates the Newton iteration loop for time integration
  *
@@ -113,6 +115,24 @@ private:
 
   /** @brief Debug output suffix string combining time step and iteration number */
   std::string istr_;
+
+  /** @brief Solution state the increment under line-search test started from */
+  Array<double> ls_A0_, ls_Y0_, ls_D0_, ls_Ad0_;
+
+  /** @brief Solution state produced by the full (step length 1) increment */
+  Array<double> ls_A1_, ls_Y1_, ls_D1_, ls_Ad1_;
+
+  /** @brief Step length currently applied to the increment under test */
+  double ls_alpha_ = 1.0;
+
+  /** @brief Residual norm at the state the increment under test started from */
+  double ls_norm0_ = 0.0;
+
+  /** @brief True while an increment is waiting for its residual norm */
+  bool ls_pending_ = false;
+
+  /** @brief Index of the equation the increment under test belongs to */
+  int ls_eq_ = -1;
 
   /**
    * @brief Initialize solution arrays for Ag, Yg, Dg based on problem size
@@ -235,6 +255,61 @@ private:
    * on element vertices for Taylor-Hood type elements.
    */
   void corrector_taylor_hood();
+
+  /**
+   * @brief Whether the increments of an equation are line searched
+   *
+   * @param[in] eq_index Index of the equation in com_mod.eq.
+   * @return True if the equation is line searched, false otherwise.
+   */
+  bool line_search_active(int eq_index) const;
+
+  /**
+   * @brief Record the state and residual norm an increment starts from
+   *
+   * Called just before the corrector applies the increment.
+   *
+   * @param[in] norm Residual norm assembled at the current state.
+   */
+  void line_search_begin(double norm);
+
+  /**
+   * @brief Record the state the full increment produced
+   *
+   * Called just after the corrector has applied the increment, which arms the
+   * test performed by line_search_accept at the next iteration of the same
+   * equation.
+   *
+   * @param[in] eq_index Index of the equation the increment belongs to.
+   */
+  void line_search_end(int eq_index);
+
+  /**
+   * @brief Test the increment under test against the residual norm it produced
+   *
+   * Applies the Armijo sufficient-decrease criterion. If the increment fails
+   * it, the step length is halved, the solution is set to the shortened step
+   * and false is returned, so that the caller assembles the residual again
+   * instead of taking a further Newton step from a worse state.
+   *
+   * @param[in] norm Residual norm assembled at the state under test.
+   * @return True if the step is accepted, false if it was shortened.
+   */
+  bool line_search_accept(double norm);
+
+  /**
+   * @brief Set the solution to a given fraction of the increment under test
+   *
+   * @param[in] alpha Step length to apply.
+   */
+  void line_search_set_step(double alpha);
+
+  /**
+   * @brief Temporary diagnostics: report a line-search event on the master rank
+   *
+   * @param[in] message Text appended to the time step and iteration number.
+   */
+  void line_search_log(const std::string& message) const;
 };
 
 #endif // INTEGRATOR_H
