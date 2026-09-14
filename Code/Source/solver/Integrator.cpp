@@ -19,10 +19,33 @@
 #include "utils.h"
 
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
 #include <set>
+#include <sstream>
 
 #define n_debug_integrator_step
+
+namespace {
+
+/// @brief Sufficient-decrease constant of the Armijo test on the residual
+/// norm. Small enough that any reduction of the residual accepts the step.
+constexpr double line_search_decrease = 1.0e-4;
+
+/// @brief Shortest step length the line search takes. A direction that does
+/// not reduce the residual even over this fraction is wrong rather than too
+/// long, and shortening it further only freezes the iteration.
+constexpr double line_search_min_step = 1.0 / 64.0;
+
+/// @brief Temporary diagnostics: format a number for the line-search messages
+/// without leaving std::cout in scientific mode.
+std::string line_search_number(double value) {
+  std::ostringstream stream;
+  stream << std::scientific << std::setprecision(3) << value;
+  return stream.str();
+}
+
+}  // namespace
 
 //------------------------
 // Integrator Constructor
@@ -75,6 +98,10 @@ bool Integrator::step(bool save_results) {
   // Newton iteration loop
   newton_count_ = 1;
   int iEqOld;
+
+  // No increment is under line-search test at the beginning of a time step
+  ls_pending_ = false;
+  ls_alpha_ = 1.0;
 
   // Looping over Newton iterations
   while (true) {
@@ -165,8 +192,36 @@ bool Integrator::step(bool save_results) {
     // Solve equation
     solve_linear_system();
 
+    // The norm just assembled is the merit function of the line search,
+    // evaluated at the state the increment under test produced. If that
+    // increment did not reduce the residual, shorten it and assemble again
+    // from the shortened state rather than take a further Newton step from a
+    // worse one. Both the structural residual and the pressure the coupled
+    // boundary conditions return are re-evaluated by the next pass, so the
+    // 0D response to the shortened state is accounted for.
+    // An equation that has already converged is not tested: its residual sits
+    // at the tolerance and comparing it against the previous one would reject
+    // steps over numerical noise.
+    if (ls_pending_ && ls_eq_ == iEqOld && !eq.ok &&
+        !line_search_accept(eq.FSILS.RI.iNorm)) {
+      output::output_result(simulation_, com_mod.timeP,
+                            /* save_results = */ false, iEqOld);
+      newton_count_ += 1;
+      continue;
+    }
+    ls_pending_ = false;
+
+    const bool line_searched = line_search_active(iEqOld);
+    if (line_searched) {
+      line_search_begin(eq.FSILS.RI.iNorm);
+    }
+
     // Solution is obtained, now updating (Corrector) and check for convergence
     bool all_converged = corrector_and_check_convergence();
+
+    if (line_searched) {
+      line_search_end(iEqOld);
+    }
 
     // Writing out the time passed, residual, and etc. The converged iteration
     // is flagged with an 's' when the results of this time step are saved to a
@@ -347,6 +402,128 @@ bool Integrator::corrector_and_check_convergence() {
   // Check if all equations converged
   return std::count_if(com_mod.eq.begin(), com_mod.eq.end(),
                        [](eqType& eq) { return eq.ok; }) == com_mod.eq.size();
+}
+
+//------------------------
+// line_search_active
+//------------------------
+bool Integrator::line_search_active(int eq_index) const {
+  const auto& com_mod = simulation_->com_mod;
+
+  // The nonlinearity the line search exists for is the one the coupled
+  // boundary conditions introduce, so only the equation carrying them is
+  // searched. Prestress runs are excluded because the corrector normalizes the
+  // nodal stress by its accumulated weight, which is not affine in the
+  // increment and so cannot be interpolated between the two saved states.
+  return com_mod.cplBC.coupled && !com_mod.pstEq &&
+         eq_index == static_cast<int>(com_mod.cplBC.equationIndex);
+}
+
+//------------------------
+// line_search_log
+//------------------------
+void Integrator::line_search_log(const std::string& message) const {
+  const auto& com_mod = simulation_->com_mod;
+
+  if (com_mod.cm.mas(simulation_->cm_mod)) {
+    std::cout << "[line search] time step " << com_mod.cTS << ", iteration "
+              << newton_count_ << ": " << message << std::endl;
+  }
+}
+
+//------------------------
+// line_search_begin
+//------------------------
+void Integrator::line_search_begin(double norm) {
+  auto& com_mod = simulation_->com_mod;
+
+  ls_A0_ = solutions_.current.get_acceleration();
+  ls_Y0_ = solutions_.current.get_velocity();
+  ls_D0_ = solutions_.current.get_displacement();
+  ls_Ad0_ = com_mod.Ad;
+  ls_norm0_ = norm;
+
+  line_search_log("reference residual " + line_search_number(norm) +
+                  ", trying step length " + line_search_number(1.0));
+}
+
+//------------------------
+// line_search_end
+//------------------------
+void Integrator::line_search_end(int eq_index) {
+  auto& com_mod = simulation_->com_mod;
+
+  ls_A1_ = solutions_.current.get_acceleration();
+  ls_Y1_ = solutions_.current.get_velocity();
+  ls_D1_ = solutions_.current.get_displacement();
+  ls_Ad1_ = com_mod.Ad;
+
+  ls_alpha_ = 1.0;
+  ls_pending_ = true;
+  ls_eq_ = eq_index;
+}
+
+//------------------------
+// line_search_set_step
+//------------------------
+void Integrator::line_search_set_step(double alpha) {
+  auto& com_mod = simulation_->com_mod;
+
+  // The corrector is affine in the increment, so the state a fraction of the
+  // increment produces is that same fraction of the way from the state it
+  // started at to the state the full increment produced. Interpolating the two
+  // therefore shortens the step without needing the increment itself, and
+  // holds for every branch of the corrector, including the Taylor-Hood
+  // pressure correction and the copy of the solution onto the solid domain.
+  auto shorten = [alpha](const Array<double>& s0, const Array<double>& s1,
+                         Array<double>& s) {
+    for (int i = 0; i < s.size(); i++) {
+      s(i) = s0(i) + alpha * (s1(i) - s0(i));
+    }
+  };
+
+  shorten(ls_A0_, ls_A1_, solutions_.current.get_acceleration());
+  shorten(ls_Y0_, ls_Y1_, solutions_.current.get_velocity());
+  shorten(ls_D0_, ls_D1_, solutions_.current.get_displacement());
+
+  if (com_mod.Ad.size() != 0) {
+    shorten(ls_Ad0_, ls_Ad1_, com_mod.Ad);
+  }
+}
+
+//------------------------
+// line_search_accept
+//------------------------
+bool Integrator::line_search_accept(double norm) {
+  const double limit = (1.0 - line_search_decrease * ls_alpha_) * ls_norm0_;
+
+  // Temporary diagnostics: report every attempt, so that a step length staying
+  // at one, occasionally halving, or collapsing to the minimum can be told
+  // apart in the output.
+  const std::string attempt =
+      "step length " + line_search_number(ls_alpha_) + " gives residual " +
+      line_search_number(norm) + " against limit " + line_search_number(limit) +
+      " (reference " + line_search_number(ls_norm0_) + ")";
+
+  // Armijo sufficient decrease of the residual norm
+  if (norm <= limit) {
+    line_search_log(attempt + ": ACCEPTED");
+    return true;
+  }
+
+  if (ls_alpha_ <= line_search_min_step) {
+    line_search_log(attempt +
+                    ": ACCEPTED at minimum step, residual still rising");
+    return true;
+  }
+
+  ls_alpha_ *= 0.5;
+  line_search_set_step(ls_alpha_);
+
+  line_search_log(attempt + ": REJECTED, retrying with step " +
+                  line_search_number(ls_alpha_));
+
+  return false;
 }
 
 //------------------------
