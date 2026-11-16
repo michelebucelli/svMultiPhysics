@@ -45,6 +45,8 @@ CoupledBoundaryCondition::CoupledBoundaryCondition(const CoupledBoundaryConditio
     , phys_(other.phys_)
     , flowrate_cfg_o_(other.flowrate_cfg_o_)
     , flowrate_cfg_n_(other.flowrate_cfg_n_)
+    , flowrate_from_volume_(other.flowrate_from_volume_)
+    , volume_history_(other.volume_history_)
     , has_cap_(other.has_cap_)
     , owns_cap_(other.owns_cap_)
     , cap_n_no_(other.cap_n_no_)
@@ -87,6 +89,8 @@ CoupledBoundaryCondition& CoupledBoundaryCondition::operator=(const CoupledBound
         phys_ = other.phys_;
         flowrate_cfg_o_ = other.flowrate_cfg_o_;
         flowrate_cfg_n_ = other.flowrate_cfg_n_;
+        flowrate_from_volume_ = other.flowrate_from_volume_;
+        volume_history_ = other.volume_history_;
         has_cap_ = other.has_cap_;
         owns_cap_ = other.owns_cap_;
         cap_n_no_ = other.cap_n_no_;
@@ -128,6 +132,8 @@ CoupledBoundaryCondition::CoupledBoundaryCondition(CoupledBoundaryCondition&& ot
     , phys_(other.phys_)
     , flowrate_cfg_o_(other.flowrate_cfg_o_)
     , flowrate_cfg_n_(other.flowrate_cfg_n_)
+    , flowrate_from_volume_(other.flowrate_from_volume_)
+    , volume_history_(other.volume_history_)
     , has_cap_(other.has_cap_)
     , owns_cap_(other.owns_cap_)
     , cap_n_no_(other.cap_n_no_)
@@ -185,6 +191,8 @@ CoupledBoundaryCondition& CoupledBoundaryCondition::operator=(CoupledBoundaryCon
         phys_ = other.phys_;
         flowrate_cfg_o_ = other.flowrate_cfg_o_;
         flowrate_cfg_n_ = other.flowrate_cfg_n_;
+        flowrate_from_volume_ = other.flowrate_from_volume_;
+        volume_history_ = other.volume_history_;
         has_cap_ = other.has_cap_;
         owns_cap_ = other.owns_cap_;
         cap_n_no_ = other.cap_n_no_;
@@ -313,6 +321,18 @@ void CoupledBoundaryCondition::set_flowrate_mechanical_configurations(consts::Eq
 /// The flowrate is computed as the integral of velocity dotted with the face normal.
 /// For struct/ustruct physics, the integral is computed on the deformed configuration.
 /// For fluid/FSI/CMM physics, the integral is computed on the reference configuration.
+///
+/// If the flowrate is computed from the enclosed volume, the flowrate at the new timestep
+/// is the rate that the Newmark relations give for the volume enclosed by the face and its
+/// cap, and the flowrate at the old timestep is the rate stored in the volume history. The
+/// flowrate at the new timestep then depends on the solution only through the enclosed
+/// volume, whose derivative with respect to the nodal displacements is the integral of the
+/// shape functions times the normal.
+///
+/// @param[in] com_mod Common data of the simulation.
+/// @param[in] cm_mod Communication data.
+/// @param[in] solutions Solution states providing velocities and displacements at the old
+///   and new timesteps.
 void CoupledBoundaryCondition::compute_flowrates(ComMod& com_mod, const CmMod& cm_mod, const SolutionStates& solutions)
 {
     int nsd = com_mod.nsd;
@@ -334,6 +354,106 @@ void CoupledBoundaryCondition::compute_flowrates(ComMod& com_mod, const CmMod& c
         Qo_ += Qo_cap;
         Qn_ += Qn_cap;
     }
+
+    if (flowrate_from_volume_) {
+        // The history starts from the enclosed volume and the velocity
+        // flowrate at the old timestep, with a zero second derivative.
+        if (!volume_history_.initialized) {
+            const auto& eq = com_mod.eq[com_mod.cplBC.equationIndex];
+            if (eq.roInf >= 1.0) {
+                throw std::runtime_error("[CoupledBoundaryCondition::compute_flowrates] Computing the flowrate "
+                                         "from the enclosed volume on face '" + face_name_ +
+                                         "' requires a spectral radius of infinite time step below one.");
+            }
+
+            volume_history_.volume = compute_enclosed_volume(com_mod, cm_mod, solutions, flowrate_cfg_o_);
+            volume_history_.rate = Qo_;
+            volume_history_.second_derivative = 0.0;
+            volume_history_.initialized = true;
+        }
+
+        const double volume = compute_enclosed_volume(com_mod, cm_mod, solutions, flowrate_cfg_n_);
+        Qo_ = volume_history_.rate;
+        Qn_ = newmark_volume_rate(com_mod, volume).first;
+    }
+}
+
+double CoupledBoundaryCondition::compute_enclosed_volume(ComMod& com_mod, const CmMod& cm_mod,
+                                                         const SolutionStates& solutions,
+                                                         consts::MechanicalConfigurationType cfg)
+{
+    using namespace consts;
+
+    const int nsd = com_mod.nsd;
+    const int tnNo = com_mod.tnNo;
+    const int equation_offset = com_mod.eq[com_mod.cplBC.equationIndex].s;
+
+    // Displacement that takes the reference positions to the requested
+    // configuration, if any.
+    const Array<double>* displacement = nullptr;
+    if (cfg == MechanicalConfigurationType::old_timestep) {
+        displacement = &solutions.old.get_displacement();
+    } else if (cfg == MechanicalConfigurationType::new_timestep) {
+        displacement = &solutions.current.get_displacement();
+    }
+
+    Array<double> position(nsd, tnNo);
+    for (int a = 0; a < tnNo; a++) {
+        for (int i = 0; i < nsd; i++) {
+            position(i, a) = com_mod.x(i, a);
+            if (displacement != nullptr) {
+                position(i, a) += (*displacement)(equation_offset + i, a);
+            }
+        }
+    }
+
+    // By the divergence theorem, the flux of the position vector through a
+    // closed surface is the number of space dimensions times the enclosed
+    // volume.
+    double position_flux = all_fun::integ(com_mod, cm_mod, *face_, position, solutions, cfg, equation_offset);
+    if (has_cap_) {
+        position_flux += calculate_cap_position_flux(com_mod, cm_mod, solutions, cfg);
+    }
+
+    return position_flux / static_cast<double>(nsd);
+}
+
+std::pair<double, double> CoupledBoundaryCondition::newmark_volume_rate(const ComMod& com_mod,
+                                                                        const double volume) const
+{
+    const auto& eq = com_mod.eq[com_mod.cplBC.equationIndex];
+    const double dt = com_mod.dt;
+    const double beta = eq.beta;
+    const double gamma = eq.gam;
+
+    // The first Newmark relation,
+    //   V_new = V_old + dt * dV_old + dt^2 * ((1/2 - beta) * ddV_old + beta * ddV_new),
+    // gives the second derivative at the new timestep, and the second one,
+    //   dV_new = dV_old + dt * ((1 - gamma) * ddV_old + gamma * ddV_new),
+    // gives the rate.
+    const double second_derivative =
+        (volume - volume_history_.volume - dt * volume_history_.rate) / (beta * dt * dt) -
+        (0.5 - beta) / beta * volume_history_.second_derivative;
+    const double rate =
+        volume_history_.rate +
+        dt * ((1.0 - gamma) * volume_history_.second_derivative + gamma * second_derivative);
+
+    return {rate, second_derivative};
+}
+
+void CoupledBoundaryCondition::advance_volume_history(ComMod& com_mod, const CmMod& cm_mod,
+                                                      const SolutionStates& solutions)
+{
+    if (!flowrate_from_volume_ || !volume_history_.initialized) {
+        return;
+    }
+
+    const double volume = compute_enclosed_volume(com_mod, cm_mod, solutions, flowrate_cfg_n_);
+    const auto [rate, second_derivative] = newmark_volume_rate(com_mod, volume);
+
+    volume_history_.volume = volume;
+    volume_history_.rate = rate;
+    volume_history_.second_derivative = second_derivative;
 }
 
 /// @brief Compute average pressures at the boundary face at old and new timesteps
@@ -477,6 +597,7 @@ void CoupledBoundaryCondition::distribute(const ComMod& com_mod, const CmMod& cm
     
     // Distribute follower pressure load flag and physical configuration
     cm.bcast(cm_mod, &follower_pressure_load_);
+    cm.bcast(cm_mod, &flowrate_from_volume_);
 
     int phys_int = static_cast<int>(phys_);
     cm.bcast(cm_mod, &phys_int);
@@ -821,6 +942,29 @@ std::pair<double, double> CoupledBoundaryCondition::calculate_cap_contribution(C
         cm.bcast(cm_mod, &Qn_cap);
     }
     return {Qo_cap, Qn_cap};
+}
+
+double CoupledBoundaryCondition::calculate_cap_position_flux(ComMod& com_mod, const CmMod& cm_mod,
+                                                             const SolutionStates& solutions,
+                                                             consts::MechanicalConfigurationType cfg)
+{
+    auto& cm = com_mod.cm;
+    double position_flux = 0.0;
+    const bool i_am_master = cm.mas(cm_mod);
+    const bool serial_run = (cm.np() == 1);
+
+    gather_global_mesh_state(com_mod, cm_mod, solutions, true);
+
+    // Integrate over the cap surface (in master rank)
+    if ((serial_run || i_am_master) && owns_cap_ && cap_ && cap_->face()) {
+        position_flux = cap_->integrate_position_flux(cap_global_mesh_state_, cfg);
+    }
+
+    // Broadcast the cap contribution to all ranks.
+    if (!serial_run) {
+        cm.bcast(cm_mod, &position_flux);
+    }
+    return position_flux;
 }
 
 // =========================================================================
@@ -1235,6 +1379,33 @@ double CappingSurface::integrate_velocity_flux(const CapGlobalMeshState& st, boo
     return result;
 }
 
+
+double CappingSurface::integrate_position_flux(const CapGlobalMeshState& st,
+                                               consts::MechanicalConfigurationType cfg)
+{
+    std::unordered_map<int, int> gn_to_cap_local;
+    gn_to_cap_local.reserve(face_->nNo);
+    for (int a = 0; a < face_->nNo; a++) {
+        gn_to_cap_local[face_->gN(a)] = a;
+    }
+
+    double result = 0.0;
+    for (int e = 0; e < face_->nEl; e++) {
+        Array<double> xl = update_element_position_global(e, cfg, st.x, st.Do, st.Dn, gn_to_cap_local);
+        for (int g = 0; g < face_->nG; g++) {
+            auto [Jac, n] = compute_jacobian_and_normal(xl, e, g);
+            double sHat = 0.0;
+            for (int a = 0; a < face_->eNoN; a++) {
+                double Na = face_->N(a, g);
+                for (int i = 0; i < cap_nsd_; i++) {
+                    sHat += Na * xl(i, a) * n(i);
+                }
+            }
+            result += face_->w(g) * Jac * sHat;
+        }
+    }
+    return result;
+}
 
 /// @brief Computes the cap contribution to the linear solver face.
 /// @param cfg The mechanical configuration type.

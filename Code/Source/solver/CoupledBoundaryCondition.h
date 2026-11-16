@@ -152,6 +152,16 @@ class CappingSurface {
         double integrate_velocity_flux(const CapGlobalMeshState& st, bool use_Yn_velocity,
             consts::MechanicalConfigurationType cfg);
         
+        /// @brief Integrate the flux of the position vector through the cap.
+        ///
+        /// Runs on the rank that owns the cap (master, or the only rank of a serial run).
+        ///
+        /// @param[in] st Cap nodal state, with columns indexed by cap node.
+        /// @param[in] cfg Configuration in which the positions and the normals are taken.
+        ///
+        /// @return The integral over the cap of the position dotted with the normal.
+        double integrate_position_flux(const CapGlobalMeshState& st, consts::MechanicalConfigurationType cfg);
+
         /// @brief Compute the cap contribution to the linear solver face (fills \ref valM_; safe under \c const *this).
         void compute_valM(consts::MechanicalConfigurationType cfg, const CapGlobalMeshState& st) const;
 
@@ -248,6 +258,22 @@ private:
     consts::EquationType phys_ = consts::EquationType::phys_NA;  ///< Equation physics for this coupled BC (set at construction)
     consts::MechanicalConfigurationType flowrate_cfg_o_ = consts::MechanicalConfigurationType::reference;
     consts::MechanicalConfigurationType flowrate_cfg_n_ = consts::MechanicalConfigurationType::reference;
+
+    /// @brief Whether the flowrate at the new timestep is the rate of the volume enclosed by the face and its cap.
+    bool flowrate_from_volume_ = false;
+
+    /// @brief Volume enclosed by the face and its cap at the old timestep, with the rate and the second
+    /// derivative that the Newmark relations associate with it.
+    ///
+    /// The volume is signed so that its rate is the flowrate, i.e. the integral of the velocity dotted with
+    /// the face normal.
+    struct VolumeHistory {
+        bool initialized = false;
+        double volume = 0.0;
+        double rate = 0.0;
+        double second_derivative = 0.0;
+    };
+    VolumeHistory volume_history_;
     
     /// @brief True if this BC uses a chamber cap (broadcast in distribute so all ranks agree).
     bool has_cap_ = false;
@@ -272,6 +298,29 @@ private:
 
     /// Fill \ref cap_global_mesh_state_ with cap nodes only (uses \ref cap_mesh_global_node_ids_).
     void gather_global_mesh_state(ComMod& com_mod, const CmMod& cm_mod, const SolutionStates& solutions, bool gather_Y) const;
+
+    /// @brief Integrate the flux of the position vector through the cap and make it available on all ranks.
+    ///
+    /// @param[in] com_mod Common data of the simulation.
+    /// @param[in] cm_mod Communication data.
+    /// @param[in] solutions Solution states providing the displacements.
+    /// @param[in] cfg Configuration in which the positions and the normals are taken.
+    ///
+    /// @return The integral over the cap of the position dotted with the normal.
+    double calculate_cap_position_flux(ComMod& com_mod, const CmMod& cm_mod, const SolutionStates& solutions,
+                                       consts::MechanicalConfigurationType cfg);
+
+    /// @brief Apply the Newmark relations to the enclosed volume.
+    ///
+    /// The relations are those the time integrator uses between displacement, velocity and acceleration,
+    /// with the volume history as the state at the old timestep.
+    ///
+    /// @param[in] com_mod Common data of the simulation, providing the time step size and the Newmark
+    ///   parameters of the coupled equation.
+    /// @param[in] volume Enclosed volume at the new timestep.
+    ///
+    /// @return The rate and the second derivative of the enclosed volume at the new timestep.
+    std::pair<double, double> newmark_volume_rate(const ComMod& com_mod, double volume) const;
 
 
 public:
@@ -428,6 +477,38 @@ public:
     /// @param com_mod ComMod reference containing simulation data
     /// @param cm_mod CmMod reference for communication
     void compute_flowrates(ComMod& com_mod, const CmMod& cm_mod, const SolutionStates& solutions);
+
+    /// @brief Select how the flowrate at the new timestep is computed.
+    ///
+    /// @param[in] flowrate_from_volume If true, the flowrate is the rate of the volume enclosed by the face
+    ///   and its cap. If false, it is the integral of the velocity over the face and its cap.
+    void set_flowrate_from_volume(bool flowrate_from_volume) { flowrate_from_volume_ = flowrate_from_volume; }
+
+    /// @brief Compute the volume enclosed by the face and its cap.
+    ///
+    /// The volume is the flux of the position vector through the face and its cap, divided by the number of
+    /// space dimensions, which is the enclosed volume when the two form a closed surface. It carries the sign
+    /// of the face normal: it is positive when the normal points out of the enclosed region.
+    ///
+    /// @param[in] com_mod Common data of the simulation.
+    /// @param[in] cm_mod Communication data.
+    /// @param[in] solutions Solution states providing the displacements.
+    /// @param[in] cfg Configuration in which the positions and the normals are taken.
+    ///
+    /// @return The signed enclosed volume.
+    double compute_enclosed_volume(ComMod& com_mod, const CmMod& cm_mod, const SolutionStates& solutions,
+                                   consts::MechanicalConfigurationType cfg);
+
+    /// @brief Advance the volume history to the solution of the time step that has just been completed.
+    ///
+    /// Must be called once per time step, with the converged solution in the current solution state and
+    /// before that state is copied onto the old one. Does nothing unless the flowrate is computed from the
+    /// enclosed volume.
+    ///
+    /// @param[in] com_mod Common data of the simulation.
+    /// @param[in] cm_mod Communication data.
+    /// @param[in] solutions Solution states, with the converged solution in the current state.
+    void advance_volume_history(ComMod& com_mod, const CmMod& cm_mod, const SolutionStates& solutions);
 
     /// @brief Initialize cap quadrature on the master (call from \c baf_ini after partition).
     void initialize_cap(ComMod& com_mod);

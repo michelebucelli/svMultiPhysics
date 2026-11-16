@@ -30,6 +30,7 @@
 #include "vtk_xml.h"
 #include "ris.h"
 #include "uris.h"
+#include "utils.h"
 
 #include <stdlib.h>
 #include <iomanip>
@@ -531,6 +532,16 @@ void iterate_solution(Simulation* simulation)
 
     if (reached_stop_time_step) {
       break;
+    }
+
+    // The history that coupled boundary conditions keep across time steps is
+    // advanced to the solution of this time step.
+    for (auto& eq : com_mod.eq) {
+      for (auto& bc : eq.bc) {
+        if (utils::btest(bc.bType, static_cast<int>(BoundaryConditionType::bType_Coupled))) {
+          bc.coupled_bc.advance_volume_history(com_mod, cm_mod, solutions);
+        }
+      }
     }
 
     // Solution is stored here before replacing it at next time step

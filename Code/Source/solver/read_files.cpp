@@ -649,6 +649,18 @@ void read_bc(Simulation* simulation, EquationParameters* eq_params, eqType& lEq,
         lBc.coupled_bc.set_oned_ramp(ramp_steps, ramp_P_ref);
       }
 
+      // Compute the flow rate from the volume enclosed by the face and its
+      // cap, if requested. The Newmark relations that give the rate of that
+      // volume are those of the struct time integrator.
+      if (bc_params->coupling_interface.flowrate_from_volume.value()) {
+        if (cpl_phys != Equation_struct) {
+          throw std::runtime_error(
+              std::string("[read_bc] Flowrate_from_volume is only supported for struct physics on face '") +
+              face_name + "'.");
+        }
+        lBc.coupled_bc.set_flowrate_from_volume(true);
+      }
+
       // Read optional under-relaxation factor for 0D coupling.
       if (bc_params->coupling_interface.coupling_relax_factor.defined()) {
         double omega = bc_params->coupling_interface.coupling_relax_factor.value();

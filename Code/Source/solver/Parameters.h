@@ -826,6 +826,14 @@ class CouplingInterfaceParameters : public ParameterLists
     Parameter<std::string> svzerod_solver_block;
     Parameter<std::string> chamber_cap_surface;
 
+    // Whether the flow rate passed to the 0D model is the rate of the volume
+    // enclosed by the coupled face and its cap, obtained from the Newmark
+    // relations. If false, it is the integral of the velocity over the face
+    // and its cap. Requires a struct equation, a face that together with its
+    // cap forms a closed surface, and a spectral radius of infinite time step
+    // below one.
+    Parameter<bool> flowrate_from_volume;
+
     // Path to the svOneDSolver .in input file for this face (1D coupling).
     Parameter<std::string> svoned_input_file;
 
