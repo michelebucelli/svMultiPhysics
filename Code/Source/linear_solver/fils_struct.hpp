@@ -127,11 +127,28 @@ class FSILS_faceType
 
     /// Neu W*Sai                      (TMP)
     Array<double> valM;
-    
+
+    /// Coupled: True if the flux through this face varies with the face
+    /// geometry, so that the right factor of the coupling operator is
+    /// val + shape_val (plus cap_val + cap_shape_val on a capped face)
+    bool has_shape_derivative = false;
+
+    /// Coupled: derivative of the flux with respect to the nodal positions,
+    /// scaled to add to val, nsd x nNo  (IN)
+    Array<double> shape_val;
+
+    /// Coupled: W*shape_val           (TMP)
+    Array<double> shape_valM;
+
     /// Coupled: Cap contribution (precomputed cap normal integrals, nsd x cap_nNo)
     Array<double> cap_val;
     
-    /// Coupled: Cap contribution after preconditioning (W*cap_val), nsd x cap_nNo
+    /// Coupled: Cap part of shape_val, nsd x cap_nNo
+    /// Only allocated if this is a Coupled face with a cap and has_shape_derivative is set
+    Array<double> cap_shape_val;
+
+    /// Coupled: Cap contribution after preconditioning (W*cap_val, or
+    /// W*(cap_val + cap_shape_val) if has_shape_derivative is set), nsd x cap_nNo
     /// Only allocated if this is a Coupled face with a cap
     Array<double> cap_valM;
     

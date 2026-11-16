@@ -26,6 +26,7 @@
 #include <fsils_api.hpp>
 
 #include <math.h>
+#include <optional>
 
 namespace eq_assem {
 
@@ -286,17 +287,31 @@ void b_neu_folw_p(ComMod& com_mod, const bcType& lBc, const faceType& lFa, const
   }
 }
 
-/// @brief Update the surface integral involved in the coupled/resistance BC
+/// @brief Update the surface integrals involved in the coupled/resistance BC
 /// contribution to the stiffness matrix to reflect deformed geometry, if using
 /// a follower pressure load.
-/// The value of this integral is stored in lhs%face%val.
-/// This integral is sV = int_Gammat (Na * n_i) (See Brown et al. 2024, Eq. 56)
-/// where Na is the shape function and n_i is the normal vector.
 ///
-/// This function updates the variable lhs%face%val with the new value, which
-/// is eventually used in ADDBCMUL() in the linear solver to add the contribution
-/// from the resistance BC to the matrix-vector product of the tangent matrix and
-/// an arbitrary vector.
+/// The integral sV = int_Gammat (Na * n_i) (See Brown et al. 2024, Eq. 56),
+/// where Na is the shape function and n_i is the normal vector, is stored in
+/// lhs%face%val. It is eventually used in ADDBCMUL() in the linear solver to
+/// add the contribution from the resistance BC to the matrix-vector product of
+/// the tangent matrix and an arbitrary vector.
+///
+/// For a 0D-coupled BC of a struct equation, the flux through the face also
+/// varies with the nodal displacements, because it is integrated on the
+/// deformed face. The derivative of the flux with respect to the nodal
+/// positions, with the velocity at timestep n+1 held fixed, is stored in
+/// lhs%face%shape_val, multiplied by beta*dt/gamma: the ratio between the
+/// displacement and the velocity increments that an increment of the unknown
+/// produces. ADDBCMUL() adds it to the right factor of the contribution. It
+/// is omitted on shell meshes.
+///
+/// @param[in,out] com_mod The common module. Its lhs.face entry for 'lBc' is
+///   updated.
+/// @param[in] lBc The boundary condition.
+/// @param[in] lFa The face of the boundary condition.
+/// @param[in] solutions The solution states that the displacement and the
+///   velocity are taken from.
 void fsi_ls_upd(ComMod& com_mod, const bcType& lBc, const faceType& lFa, const SolutionStates& solutions)
 {
   using namespace consts;
@@ -320,6 +335,18 @@ void fsi_ls_upd(ComMod& com_mod, const bcType& lBc, const faceType& lFa, const S
   Array<double> sVl(nsd,nNo); 
   Array<double> sV(nsd,tnNo); 
 
+  const auto& eq = com_mod.eq[com_mod.cEq];
+  const auto& Dn = solutions.current.get_displacement();
+  const auto& Yn = solutions.current.get_velocity();
+
+  // Whether the flux through the face varies with the face geometry, and the
+  // factor that scales that variation to the one due to the velocity
+  const bool shape_derivative =
+      utils::btest(lBc.bType, static_cast<int>(BoundaryConditionType::bType_Coupled)) &&
+      (eq.phys == Equation_struct) && !com_mod.msh[iM].lShl;
+  const double shape_scale = eq.beta * com_mod.dt / eq.gam;
+  Array<double> gV(nsd, shape_derivative ? tnNo : 0);
+
   // Updating the value of the surface integral of the normal vector
   // using the deformed configuration ('n' = new = timestep n+1)
   sV = 0.0;
@@ -341,6 +368,34 @@ void fsi_ls_upd(ComMod& com_mod, const bcType& lBc, const faceType& lFa, const S
           sV(i,Ac) = sV(i,Ac) + lFa.N(a,g)*lFa.w(g)*n(i);
         }
       }
+
+      if (shape_derivative) {
+        // Tangent vectors and velocity at the Gauss point, at timestep n+1
+        Array<double> xXi(nsd, Nx.nrows());
+        Vector<double> u(nsd);
+
+        for (int a = 0; a < lFa.eNoN; a++) {
+          int Ac = lFa.IEN(a,e);
+          for (int i = 0; i < nsd; i++) {
+            const double x = com_mod.x(i,Ac) + Dn(eq.s+i,Ac);
+            for (int k = 0; k < Nx.nrows(); k++) {
+              xXi(i,k) = xXi(i,k) + Nx(k,a)*x;
+            }
+            u(i) = u(i) + lFa.N(a,g)*Yn(eq.s+i,Ac);
+          }
+        }
+
+        // 'n' is cross(xXi) up to the sign that makes it point outward
+        const double sign = (n * utils::cross(xXi) < 0.0) ? -1.0 : 1.0;
+        const auto dQ = nn::flux_shape_derivative(xXi, Nx, u);
+
+        for (int a = 0; a < lFa.eNoN; a++) {
+          int Ac = lFa.IEN(a,e);
+          for (int i = 0; i < nsd; i++) {
+            gV(i,Ac) = gV(i,Ac) + shape_scale*sign*lFa.w(g)*dQ(i,a);
+          }
+        }
+      }
     }
   }
 
@@ -352,6 +407,16 @@ void fsi_ls_upd(ComMod& com_mod, const bcType& lBc, const faceType& lFa, const S
   }
   // Update lhs.face(i).val with the new value of the surface integral
   fsils_bc_update(com_mod.lhs, lBc.lsPtr, lFa.nNo, nsd, sVl);
+
+  // Update lhs.face(i).shape_val with the scaled derivative of the flux
+  if (shape_derivative) {
+    Array<double> gVl(nsd,nNo);
+    for (int a = 0; a < lFa.nNo; a++) {
+      int Ac = lFa.gN(a);
+      gVl.set_col(a, gV.col(Ac));
+    }
+    fsils_bc_update_shape(com_mod.lhs, lBc.lsPtr, lFa.nNo, nsd, gVl);
+  }
   
   // If this is a Coupled BC, copy cap data to linear solver face structure
   if (utils::btest(lBc.bType, static_cast<int>(BoundaryConditionType::bType_Coupled))) {
@@ -361,12 +426,15 @@ void fsi_ls_upd(ComMod& com_mod, const bcType& lBc, const faceType& lFa, const S
     auto& cpl = lBc.coupled_bc;
     face.has_cap = cpl.has_cap();
     if (cpl.has_cap()) {
-      cpl.copy_cap_surface_to_linear_solver_face(com_mod, face, cfg, solutions);
+      cpl.copy_cap_surface_to_linear_solver_face(
+          com_mod, face, cfg, solutions,
+          shape_derivative ? std::optional<double>(shape_scale) : std::nullopt);
     }
   } else {
     // Clear cap fields if not a Coupled BC
     auto& face = com_mod.lhs.face[lBc.lsPtr];
     face.cap_val.resize(0, 0);
+    face.cap_shape_val.resize(0, 0);
     face.cap_valM.resize(0, 0);
     face.cap_glob.resize(0);
     face.has_cap = false;

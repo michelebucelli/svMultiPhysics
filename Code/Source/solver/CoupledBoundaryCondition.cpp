@@ -1267,19 +1267,89 @@ void CappingSurface::compute_valM(consts::MechanicalConfigurationType cfg, const
     }
 }
 
+/// @brief Computes the derivative of the flux of the velocity at timestep n+1
+/// through the cap with respect to the positions of the cap nodes.
+///
+/// The velocity is held fixed. The result is the cap part of the dependence
+/// of the coupled flux on the geometry.
+///
+/// @param[in] cfg The mechanical configuration in which the cap geometry is
+///   taken.
+/// @param[in] st The cap global mesh state.
+///
+/// @return The derivative, one column per cap node in the order of the cap
+///   face (nsd x number of cap nodes).
+Array<double> CappingSurface::compute_flux_shape_derivative(consts::MechanicalConfigurationType cfg,
+                                                            const CapGlobalMeshState& st) const
+{
+    int cap_nNo = face_->nNo;
+
+    Array<double> derivative(cap_nsd_, cap_nNo);
+
+    // Map global node IDs to cap face-local indices
+    std::unordered_map<int, int> gnNo_to_cap_local;
+    for (int a = 0; a < cap_nNo; a++) {
+        int gnNo = face_->gN(a);
+        gnNo_to_cap_local[gnNo] = a;
+    }
+
+    for (int e = 0; e < face_->nEl; e++) {
+        Array<double> xl = update_element_position_global(e, cfg, st.x, st.Do, st.Dn, gnNo_to_cap_local);
+        for (int g = 0; g < face_->nG; g++) {
+            Array<double> Nx_g = face_->Nx.rslice(g);
+
+            // Tangent vectors and velocity at the Gauss point
+            Array<double> xXi(cap_nsd_, cap_insd_);
+            Vector<double> u(cap_nsd_);
+            for (int a = 0; a < face_->eNoN; a++) {
+                int cap_a = gnNo_to_cap_local.at(face_->IEN(a, e));
+                for (int i = 0; i < cap_nsd_; i++) {
+                    for (int k = 0; k < cap_insd_; k++) {
+                        xXi(i, k) += xl(i, a) * Nx_g(k, a);
+                    }
+                    u(i) += face_->N(a, g) * st.Yn(i, cap_a);
+                }
+            }
+
+            // The cap normal is cross(xXi) up to the sign set by the initial normals
+            auto [Jac, n] = compute_jacobian_and_normal(xl, e, g);
+            const double sign = (n * utils::cross(xXi) < 0.0) ? -1.0 : 1.0;
+            const auto dQ = nn::flux_shape_derivative(xXi, Nx_g, u);
+
+            for (int a = 0; a < face_->eNoN; a++) {
+                int cap_a = gnNo_to_cap_local.at(face_->IEN(a, e));
+                for (int i = 0; i < cap_nsd_; i++) {
+                    derivative(i, cap_a) += sign * face_->w(g) * dQ(i, a);
+                }
+            }
+        }
+    }
+
+    return derivative;
+}
+
 namespace {
 
 
 /// @brief Broadcasts the cap contribution to the linear solver face to all ranks.
-/// @param com_mod The com_mod object.
-/// @param cm_mod The cm_mod object.
-/// @param lhs_face The linear solver face.
-/// @param cap_nNo The number of cap nodes (same on all ranks: \c cap_n_no_ from \c distribute()).
-/// @param cap_gN_all The global node IDs of the cap nodes.
-/// @param cap_val_all The values of the cap nodes.
+///
+/// @param[in] com_mod The com_mod object.
+/// @param[in] cm_mod The cm_mod object.
+/// @param[out] lhs_face The linear solver face, whose cap fields are set.
+/// @param[in] cap_nNo The number of cap nodes (same on all ranks: \c cap_n_no_ from \c distribute()).
+/// @param[in,out] cap_gN_all The global node IDs of the cap nodes. Filled on
+///   the master rank, received on the others.
+/// @param[in,out] cap_val_all The values of the cap nodes. Filled on the
+///   master rank, received on the others.
+/// @param[in] with_shape_derivative Whether \a cap_shape_val_all is
+///   broadcast and copied to the face.
+/// @param[in,out] cap_shape_val_all The scaled derivative of the cap flux
+///   with respect to the positions of the cap nodes. Filled on the master
+///   rank, received on the others.
 void bcast_cap_lhs_contribution(ComMod& com_mod, const CmMod& cm_mod,
                                 fsi_linear_solver::FSILS_faceType& lhs_face, int cap_nNo,
-                                Vector<int>& cap_gN_all, Array<double>& cap_val_all)
+                                Vector<int>& cap_gN_all, Array<double>& cap_val_all,
+                                bool with_shape_derivative, Array<double>& cap_shape_val_all)
 {
     auto& cm = com_mod.cm;
     const bool i_am_sender = cm.mas(cm_mod);
@@ -1288,11 +1358,17 @@ void bcast_cap_lhs_contribution(ComMod& com_mod, const CmMod& cm_mod,
     if (!i_am_sender && cap_nNo > 0) {
         cap_gN_all.resize(cap_nNo);
         cap_val_all.resize(nsd, cap_nNo);
+        if (with_shape_derivative) {
+            cap_shape_val_all.resize(nsd, cap_nNo);
+        }
     }
 
     if (cap_nNo > 0) {
         cm.bcast(cm_mod, cap_gN_all);
         cm.bcast(cm_mod, cap_val_all);
+        if (with_shape_derivative) {
+            cm.bcast(cm_mod, cap_shape_val_all);
+        }
     }
 
     // Count cap nodes owned by this rank only (exclude ghost duplicates).
@@ -1314,6 +1390,7 @@ void bcast_cap_lhs_contribution(ComMod& com_mod, const CmMod& cm_mod,
     // Resize the cap contribution to the linear solver face (in all ranks)
     lhs_face.cap_glob.resize(n_owned);
     lhs_face.cap_val.resize(nsd, n_owned);
+    lhs_face.cap_shape_val.resize(nsd, with_shape_derivative ? n_owned : 0);
     lhs_face.cap_valM.resize(nsd, n_owned);
     lhs_face.cap_valM = 0.0;
 
@@ -1334,6 +1411,9 @@ void bcast_cap_lhs_contribution(ComMod& com_mod, const CmMod& cm_mod,
                 lhs_face.cap_glob(idx) = mapped;
                 for (int i = 0; i < nsd; i++) {
                     lhs_face.cap_val(i, idx) = cap_val_all(i, a);
+                    if (with_shape_derivative) {
+                        lhs_face.cap_shape_val(i, idx) = cap_shape_val_all(i, a);
+                    }
                 }
                 idx++;
             }
@@ -1344,18 +1424,25 @@ void bcast_cap_lhs_contribution(ComMod& com_mod, const CmMod& cm_mod,
 } // namespace
 
 /// @brief Calculates the cap contribution to the linear solver face and broadcasts it to all ranks.
-/// @param com_mod The com_mod object.
-/// @param lhs_face The linear solver face.
-/// @param cfg The mechanical configuration type.
+///
+/// @param[in] com_mod The com_mod object.
+/// @param[out] lhs_face The linear solver face, whose cap fields are set.
+/// @param[in] cfg The mechanical configuration type.
+/// @param[in] solutions The solution states.
+/// @param[in] shape_scale If set, the derivative of the cap flux with respect
+///   to the positions of the cap nodes is multiplied by this factor and
+///   stored in the cap_shape_val field of the face.
 void CoupledBoundaryCondition::copy_cap_surface_to_linear_solver_face(ComMod& com_mod,
                                                                       fsi_linear_solver::FSILS_faceType& lhs_face,
                                                                       consts::MechanicalConfigurationType cfg,
-                                                                      const SolutionStates& solutions) const
+                                                                      const SolutionStates& solutions,
+                                                                      std::optional<double> shape_scale) const
 {
     const int nsd = com_mod.nsd;
     const int cap_nNo = cap_n_no_;
     Vector<int> cap_gN_all;
     Array<double> cap_val_all;
+    Array<double> cap_shape_val_all;
 
     // Calculate the cap contribution to the linear solver face (in master rank)
     if (owns_cap_ && cap_) {
@@ -1369,10 +1456,21 @@ void CoupledBoundaryCondition::copy_cap_surface_to_linear_solver_face(ComMod& co
                 cap_val_all(i, a) = cap_->valM()(i, a);
             }
         }
+
+        if (shape_scale) {
+            const auto derivative = cap_->compute_flux_shape_derivative(cfg, cap_global_mesh_state_);
+            cap_shape_val_all.resize(nsd, cap_nNo);
+            for (int a = 0; a < cap_nNo; a++) {
+                for (int i = 0; i < nsd; i++) {
+                    cap_shape_val_all(i, a) = *shape_scale * derivative(i, a);
+                }
+            }
+        }
     }
 
     // Broadcast the cap contribution to all ranks
-    bcast_cap_lhs_contribution(com_mod, cm_mod_, lhs_face, cap_nNo, cap_gN_all, cap_val_all);
+    bcast_cap_lhs_contribution(com_mod, cm_mod_, lhs_face, cap_nNo, cap_gN_all, cap_val_all,
+                               shape_scale.has_value(), cap_shape_val_all);
 }
 
 /// @brief Broadcasts the coupled Neumann pressure to all ranks.

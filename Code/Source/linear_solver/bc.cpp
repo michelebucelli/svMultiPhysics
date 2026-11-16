@@ -180,4 +180,56 @@ void fsils_bc_update(FSILS_lhsType& lhs, int faIn, int nNo, int dof, const Array
 
 }
 
+/// @brief Set lhs.face[faIn].shape_val, the part of the right factor of the
+/// 0D-coupled tangent contribution that comes from the dependence of the flux
+/// on the face geometry.
+///
+/// Marks the face as having that part (has_shape_derivative) and sums the
+/// values over the processes that share the face.
+///
+/// @param[in,out] lhs The left-hand side holding the face.
+/// @param[in] faIn The index of the face in lhs.face.
+/// @param[in] nNo The number of nodes of the face on this process.
+/// @param[in] dof The number of rows of 'Val'.
+/// @param[in] Val The derivative of the flux with respect to the positions of
+///   the face nodes, scaled to add to lhs.face[faIn].val (dof x nNo).
+void fsils_bc_update_shape(FSILS_lhsType& lhs, int faIn, int nNo, int dof, const Array<double>& Val)
+{
+  auto& face = lhs.face[faIn];
+
+  face.has_shape_derivative = true;
+
+  if (face.shape_val.nrows() != dof || face.shape_val.ncols() != nNo) {
+    face.shape_val.resize(dof, nNo);
+    face.shape_valM.resize(dof, nNo);
+  }
+
+  for (int a = 0; a < nNo; a++) {
+    for (int i = 0; i < dof; i++) {
+      face.shape_val(i,a) = Val(i,a);
+    }
+  }
+
+  // Communicate update among procs
+  if (face.sharedFlag) {
+    Array<double> v(dof,lhs.nNo);
+
+    for (int a = 0; a < nNo; a++) {
+      int Ac = face.glob(a);
+      for (int i = 0; i < dof; i++) {
+        v(i,Ac) = face.shape_val(i,a);
+      }
+    }
+
+    fsils_commuv(lhs, dof, v);
+
+    for (int a = 0; a < nNo; a++) {
+      int Ac = face.glob(a);
+      for (int i = 0; i < dof; i++) {
+        face.shape_val(i,a) = v(i,Ac);
+      }
+    }
+  }
+}
+
 };

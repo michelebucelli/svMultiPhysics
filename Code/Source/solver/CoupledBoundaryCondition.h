@@ -155,6 +155,9 @@ class CappingSurface {
         /// @brief Compute the cap contribution to the linear solver face (fills \ref valM_; safe under \c const *this).
         void compute_valM(consts::MechanicalConfigurationType cfg, const CapGlobalMeshState& st) const;
 
+        /// @brief Differentiate the flux of the velocity at timestep n+1 through the cap with respect to the positions of the cap nodes.
+        Array<double> compute_flux_shape_derivative(consts::MechanicalConfigurationType cfg, const CapGlobalMeshState& st) const;
+
         /// @brief Get the cap face.
         const faceType* face() const { return face_.get(); }
 
@@ -435,7 +438,8 @@ public:
     /// @brief Compute cap \a valM from current cap mesh state on owner and copy/broadcast cap data to FSILS face.
     void copy_cap_surface_to_linear_solver_face(ComMod& com_mod, fsi_linear_solver::FSILS_faceType& lhs_face,
                                                 consts::MechanicalConfigurationType cfg,
-                                                const SolutionStates& solutions) const;
+                                                const SolutionStates& solutions,
+                                                std::optional<double> shape_scale) const;
 
     /// @brief Extra volumetric flux through the cap (old/new timestep); {0,0} if no cap; MPI-safe on all ranks.
     std::pair<double, double> calculate_cap_contribution(ComMod& com_mod, const CmMod& cm_mod,

@@ -225,15 +225,29 @@ void precond_diag(fsi_linear_solver::FSILS_lhsType& lhs, const Array<int>& rowPt
           face.valM(i,a) = face.val(i,a) * W(i,Ac);
         }
       }
+
+      if (face.has_shape_derivative) {
+        for (int a = 0; a < face.nNo; a++) {
+          int Ac = face.glob(a);
+          for (int i = 0; i < std::min(face.dof,dof); i++) {
+            face.shape_valM(i,a) = face.shape_val(i,a) * W(i,Ac);
+          }
+        }
+      }
       
       // If this is a Coupled BC with a cap, also compute cap_valM from cap_val
+      // (and cap_shape_val, which enters the same factor of the coupling operator)
       if (face.has_cap) {
         int cap_nNo = face.cap_val.ncols();
         for (int a = 0; a < cap_nNo; a++) {
           int Ac = face.cap_glob(a);
           if (Ac < 0) continue;  // cap node not on this rank
           for (int i = 0; i < std::min(face.dof,dof); i++) {
-            face.cap_valM(i,a) = face.cap_val(i,a) * W(i,Ac);
+            double cap_val = face.cap_val(i,a);
+            if (face.has_shape_derivative) {
+              cap_val += face.cap_shape_val(i,a);
+            }
+            face.cap_valM(i,a) = cap_val * W(i,Ac);
           }
         }
       }

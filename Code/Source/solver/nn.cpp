@@ -1137,6 +1137,40 @@ Vector<double> gnnb(const ComMod &com_mod, const faceType &lFa, const int e,
               unused_displacement_index);
 }
 
+Array<double> flux_shape_derivative(const Array<double> &xXi,
+                                    const Array<double> &Nx,
+                                    const Vector<double> &u) {
+  const int nsd = xXi.nrows();
+  const int insd = xXi.ncols();
+  const int eNoNb = Nx.ncols();
+
+  // The normal is linear in each tangent vector, and the derivative of
+  // tangent 'k' with respect to coordinate 'i' of node 'a' is Nx(k,a) times
+  // the i-th unit vector. So flux(i,k) below is the flux density obtained by
+  // replacing tangent 'k' with the i-th unit vector.
+  Array<double> flux(nsd, insd);
+  for (int k = 0; k < insd; k++) {
+    for (int i = 0; i < nsd; i++) {
+      Array<double> tangents(xXi);
+      for (int j = 0; j < nsd; j++) {
+        tangents(j,k) = (j == i) ? 1.0 : 0.0;
+      }
+      flux(i,k) = u * utils::cross(tangents);
+    }
+  }
+
+  Array<double> derivative(nsd, eNoNb);
+  for (int a = 0; a < eNoNb; a++) {
+    for (int k = 0; k < insd; k++) {
+      for (int i = 0; i < nsd; i++) {
+        derivative(i,a) += Nx(k,a) * flux(i,k);
+      }
+    }
+  }
+
+  return derivative;
+}
+
 /// @brief Compute shell kinematics: normal vector, covariant & contravariant basis vectors
 ///
 /// Replicates 'SUBROUTINE GNNS(eNoN, Nxi, xl, nV, gCov, gCnv)' defined in NN.f.

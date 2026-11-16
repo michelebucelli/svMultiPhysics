@@ -104,6 +104,29 @@ namespace nn {
                       const int g, const Array<double> &Nx,
                       const SolutionStates &solutions);
 
+  /**
+   * @brief Differentiate the flux density of a boundary element with respect
+   * to the positions of its nodes.
+   *
+   * The flux density at a Gauss point is u . n, with n = utils::cross(xXi) the
+   * area-weighted normal built from the tangent vectors of the element. Entry
+   * (i,a) of the result is the derivative of u . n with respect to coordinate
+   * 'i' of node 'a', with 'u' held fixed. The normal is taken with the
+   * orientation of utils::cross(xXi).
+   *
+   * @param[in] xXi The tangent vectors at the Gauss point, one per column
+   *   (nsd x insd).
+   * @param[in] Nx The shape function derivatives at the Gauss point
+   *   (insd x eNoNb).
+   * @param[in] u The vector whose flux is differentiated, at the Gauss point.
+   *
+   * @return The derivative of the flux density with respect to the nodal
+   *   positions (nsd x eNoNb).
+   */
+  Array<double> flux_shape_derivative(const Array<double> &xXi,
+                                      const Array<double> &Nx,
+                                      const Vector<double> &u);
+
   void gnns(const int nsd, const int eNoN, const Array<double>& Nxi, Array<double>& xl, Vector<double>& nV, 
       Array<double>& gCov, Array<double>& gCnv);
 

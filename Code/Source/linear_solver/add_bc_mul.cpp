@@ -17,12 +17,21 @@ namespace add_bc_mul {
 /// Moghadam et al. 2013b (https://doi.org/10.1007/s00466-013-0868-1).
 ///
 /// Reproduces code in ADDBCMUL.f.
-/// @param lhs The left-hand side of the linear system. 0D resistance is stored in the face(i).res field.
-/// @param op_Type The type of operation (addition or PC contribution)
-/// @param dof The number of degrees of freedom.
-/// @param X The input vector.
-/// @param Y The current matrix-vector product (Y = K*X), to which we add K^BC * X = res * v * v^T * X.
-/// The expression is slightly different if preconditioning.
+///
+/// The operator of a coupled face is K^BC = res * v * u^T. The left factor
+/// v = face.valM is the integral of the shape functions times the normal over
+/// the face. The right factor u is the derivative of the flux with respect to
+/// the unknown, divided by res: it is v, plus face.cap_valM if the face has a
+/// cap, plus face.shape_valM if the flux varies with the face geometry.
+///
+/// @param[in] lhs The left-hand side of the linear system. 0D resistance is
+///   stored in the face(i).res field.
+/// @param[in] op_Type The type of operation (addition or PC contribution).
+/// @param[in] dof The number of degrees of freedom.
+/// @param[in] X The input vector.
+/// @param[in,out] Y The current matrix-vector product (Y = K*X), to which
+///   K^BC * X is added. The coefficient that replaces res is different if
+///   preconditioning.
 void add_bc_mul(FSILS_lhsType& lhs, const BcopType op_Type, const int dof, const Array<double>& X, Array<double>& Y)
 {
   Vector<double> coef(lhs.nFaces); 
@@ -49,11 +58,15 @@ void add_bc_mul(FSILS_lhsType& lhs, const BcopType op_Type, const int dof, const
       // If face is shared across procs
       if (face.sharedFlag) {
         v = 0.0;
-        // Setting vector v = int{N_A n_i} dGamma
+        // Setting vector v = int{N_A n_i} dGamma, plus the variation of the
+        // flux with the face geometry: the right factor of the operator
         for (int a = 0; a < face.nNo; a++) {
           int Ac = face.glob(a);
           for (int i = 0; i < nsd; i++) {
             v(i,Ac) = face.valM(i,a);
+            if (face.has_shape_derivative) {
+              v(i,Ac) += face.shape_valM(i,a);
+            }
           }
         }
         // Computing S = coef * v^T * X
@@ -79,11 +92,11 @@ void add_bc_mul(FSILS_lhsType& lhs, const BcopType op_Type, const int dof, const
           }
           S = S + coef(faIn) * Scap;
         }
-        // Computing Y = Y + v * S
+        // Computing Y = Y + int{N_A n_i} dGamma * S
         for (int a = 0; a < face.nNo; a++) {
           int Ac = face.glob(a);
           for (int i = 0; i < nsd; i++) {
-            Y(i,Ac) = Y(i,Ac) + v(i,Ac)*S;
+            Y(i,Ac) = Y(i,Ac) + face.valM(i,a)*S;
           }
         }
 
@@ -96,6 +109,9 @@ void add_bc_mul(FSILS_lhsType& lhs, const BcopType op_Type, const int dof, const
           int Ac = face.glob(a);
           for (int i = 0; i < nsd; i++) {
             S = S + face.valM(i,a)*X(i,Ac);
+            if (face.has_shape_derivative) {
+              S = S + face.shape_valM(i,a)*X(i,Ac);
+            }
           }
         }
         
